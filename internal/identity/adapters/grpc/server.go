@@ -7,6 +7,8 @@ import (
 	identityv1 "github.com/ZheglY/family-tree-identity-service/gen/identity/v1"
 	"github.com/ZheglY/family-tree-identity-service/internal/identity/application"
 	"github.com/ZheglY/family-tree-identity-service/internal/identity/domain"
+	"github.com/ZheglY/family-tree-identity-service/internal/security/accesstoken"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -15,22 +17,121 @@ import (
 type IdentityApplication interface {
 	Register(context.Context, application.RegisterCommand) (domain.User, error)
 	VerifyEmail(context.Context, string) (domain.User, error)
+	Login(context.Context, application.LoginCommand) (application.SessionResult, error)
+	RefreshSession(context.Context, application.RefreshSessionCommand) (application.SessionResult, error)
+	Logout(context.Context, string) error
+	LogoutAll(context.Context, uuid.UUID) (int64, error)
 }
 
 type Server struct {
 	identityv1.UnimplementedIdentityServiceServer
 	application IdentityApplication
 	log         *zap.Logger
+	publicKey   accesstoken.PublicKeyInfo
 }
 
 func NewServer(
 	identityApplication IdentityApplication,
 	log *zap.Logger,
+	publicKey accesstoken.PublicKeyInfo,
 ) *Server {
 	return &Server{
 		application: identityApplication,
 		log:         log.Named("identity_grpc"),
+		publicKey:   publicKey,
 	}
+}
+
+func (s *Server) Login(
+	ctx context.Context,
+	request *identityv1.LoginRequest,
+) (*identityv1.SessionResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	result, err := s.application.Login(ctx, application.LoginCommand{
+		Email:    request.GetEmail(),
+		Password: request.GetPassword(),
+		SessionMetadata: application.SessionMetadata{
+			UserAgent: request.GetUserAgent(),
+			IPAddress: request.GetIpAddress(),
+		},
+	})
+	if err != nil {
+		return nil, s.mapError("login", err)
+	}
+
+	return mapSession(result), nil
+}
+
+func (s *Server) RefreshSession(
+	ctx context.Context,
+	request *identityv1.RefreshSessionRequest,
+) (*identityv1.SessionResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	result, err := s.application.RefreshSession(ctx, application.RefreshSessionCommand{
+		RefreshToken: request.GetRefreshToken(),
+		SessionMetadata: application.SessionMetadata{
+			UserAgent: request.GetUserAgent(),
+			IPAddress: request.GetIpAddress(),
+		},
+	})
+	if err != nil {
+		return nil, s.mapError("refresh session", err)
+	}
+
+	return mapSession(result), nil
+}
+
+func (s *Server) Logout(
+	ctx context.Context,
+	request *identityv1.LogoutRequest,
+) (*identityv1.LogoutResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if err := s.application.Logout(ctx, request.GetRefreshToken()); err != nil {
+		return nil, s.mapError("logout", err)
+	}
+
+	return &identityv1.LogoutResponse{}, nil
+}
+
+func (s *Server) LogoutAll(
+	ctx context.Context,
+	request *identityv1.LogoutAllRequest,
+) (*identityv1.LogoutAllResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	userID, err := uuid.Parse(request.GetUserId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "user ID is invalid")
+	}
+
+	revokedCount, err := s.application.LogoutAll(ctx, userID)
+	if err != nil {
+		return nil, s.mapError("logout all", err)
+	}
+
+	return &identityv1.LogoutAllResponse{RevokedSessionCount: revokedCount}, nil
+}
+
+func (s *Server) GetAccessTokenPublicKey(
+	context.Context,
+	*identityv1.GetAccessTokenPublicKeyRequest,
+) (*identityv1.GetAccessTokenPublicKeyResponse, error) {
+	return &identityv1.GetAccessTokenPublicKeyResponse{
+		KeyId:           s.publicKey.KeyID,
+		Algorithm:       s.publicKey.Algorithm,
+		PublicKeyBase64: s.publicKey.PublicKeyBase64,
+		Issuer:          s.publicKey.Issuer,
+		Audience:        s.publicKey.Audience,
+	}, nil
 }
 
 func (s *Server) Register(
@@ -87,9 +188,32 @@ func (s *Server) mapError(operation string, err error) error {
 	case errors.Is(err, domain.ErrVerificationTokenExpired),
 		errors.Is(err, domain.ErrVerificationTokenUsed):
 		return status.Error(codes.FailedPrecondition, "verification token cannot be used")
+	case errors.Is(err, domain.ErrInvalidSessionMetadata):
+		return status.Error(codes.InvalidArgument, "session metadata is invalid")
+	case errors.Is(err, domain.ErrInvalidCredentials):
+		return status.Error(codes.Unauthenticated, "email or password is invalid")
+	case errors.Is(err, domain.ErrEmailNotVerified):
+		return status.Error(codes.FailedPrecondition, "email verification is required")
+	case errors.Is(err, domain.ErrAccountUnavailable):
+		return status.Error(codes.PermissionDenied, "account is unavailable")
+	case errors.Is(err, domain.ErrRefreshTokenInvalid),
+		errors.Is(err, domain.ErrRefreshTokenReused),
+		errors.Is(err, domain.ErrSessionExpired),
+		errors.Is(err, domain.ErrSessionRevoked):
+		return status.Error(codes.Unauthenticated, "session is invalid")
 	default:
 		s.log.Error(operation, zap.Error(err))
 		return status.Error(codes.Internal, "internal server error")
+	}
+}
+
+func mapSession(result application.SessionResult) *identityv1.SessionResponse {
+	return &identityv1.SessionResponse{
+		User:                      mapUser(result.User),
+		AccessToken:               result.AccessToken,
+		RefreshToken:              result.RefreshToken,
+		AccessTokenExpiresAtUnix:  result.AccessTokenExpiresAt.Unix(),
+		RefreshTokenExpiresAtUnix: result.RefreshTokenExpiresAt.Unix(),
 	}
 }
 

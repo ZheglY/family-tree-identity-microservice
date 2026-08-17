@@ -8,7 +8,7 @@ func TestLoadEmbeddedMigrations(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	if got, want := len(migrations), 1; got != want {
+	if got, want := len(migrations), 2; got != want {
 		t.Fatalf("migration count = %d, want %d", got, want)
 	}
 
@@ -24,6 +24,9 @@ func TestLoadEmbeddedMigrations(t *testing.T) {
 	}
 	if len(migration.Checksum) != 64 {
 		t.Fatalf("checksum length = %d, want 64", len(migration.Checksum))
+	}
+	if migrations[1].Version != 2 || migrations[1].Name != "add_refresh_token_history" {
+		t.Fatalf("unexpected second migration: %#v", migrations[1])
 	}
 }
 

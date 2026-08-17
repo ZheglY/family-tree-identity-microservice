@@ -25,6 +25,11 @@ const (
 	defaultReadinessCheckInterval  = 5 * time.Second
 	defaultReadinessCheckTimeout   = 2 * time.Second
 	defaultEmailVerificationURL    = "http://localhost:3000/verify-email"
+	defaultAccessTokenKeyID        = "identity-development-1"
+	defaultAccessTokenIssuer       = "family-tree-identity"
+	defaultAccessTokenAudience     = "family-tree-api"
+	defaultAccessTokenTTL          = 15 * time.Minute
+	defaultRefreshTokenTTL         = 30 * 24 * time.Hour
 )
 
 type Config struct {
@@ -32,6 +37,7 @@ type Config struct {
 	GRPC     GRPCConfig
 	Postgres PostgresConfig
 	Email    EmailConfig
+	Tokens   TokenConfig
 	Logger   LoggerConfig
 }
 
@@ -58,6 +64,13 @@ func NewConfig(
 		Postgres: postgresConfig,
 		Email: EmailConfig{
 			VerificationURL: defaultEmailVerificationURL,
+		},
+		Tokens: TokenConfig{
+			AccessKeyID:    defaultAccessTokenKeyID,
+			AccessIssuer:   defaultAccessTokenIssuer,
+			AccessAudience: defaultAccessTokenAudience,
+			AccessTTL:      defaultAccessTokenTTL,
+			RefreshTTL:     defaultRefreshTokenTTL,
 		},
 		Logger: LoggerConfig{
 			Level: level,
@@ -90,6 +103,15 @@ type PostgresConfig struct {
 
 type EmailConfig struct {
 	VerificationURL string
+}
+
+type TokenConfig struct {
+	AccessPrivateKeyBase64 string
+	AccessKeyID            string
+	AccessIssuer           string
+	AccessAudience         string
+	AccessTTL              time.Duration
+	RefreshTTL             time.Duration
 }
 
 type LoggerConfig struct {
@@ -166,7 +188,54 @@ func Load() (Config, error) {
 		defaultEmailVerificationURL,
 	)
 
+	tokenConfig, err := loadTokenConfig(environment)
+	if err != nil {
+		return Config{}, err
+	}
+	config.Tokens = tokenConfig
+
 	return *config, nil
+}
+
+func loadTokenConfig(environment string) (TokenConfig, error) {
+	privateKey := strings.TrimSpace(os.Getenv("IDENTITY_ACCESS_TOKEN_PRIVATE_KEY_BASE64"))
+	if privateKey == "" && environment == "production" {
+		return TokenConfig{}, fmt.Errorf(
+			"IDENTITY_ACCESS_TOKEN_PRIVATE_KEY_BASE64 is required in production",
+		)
+	}
+
+	accessTTL, err := durationFromEnv("IDENTITY_ACCESS_TOKEN_TTL", defaultAccessTokenTTL)
+	if err != nil {
+		return TokenConfig{}, err
+	}
+	refreshTTL, err := durationFromEnv("IDENTITY_REFRESH_TOKEN_TTL", defaultRefreshTokenTTL)
+	if err != nil {
+		return TokenConfig{}, err
+	}
+	if refreshTTL <= accessTTL {
+		return TokenConfig{}, fmt.Errorf(
+			"IDENTITY_REFRESH_TOKEN_TTL must exceed IDENTITY_ACCESS_TOKEN_TTL",
+		)
+	}
+
+	return TokenConfig{
+		AccessPrivateKeyBase64: privateKey,
+		AccessKeyID: stringFromEnv(
+			"IDENTITY_ACCESS_TOKEN_KEY_ID",
+			defaultAccessTokenKeyID,
+		),
+		AccessIssuer: stringFromEnv(
+			"IDENTITY_ACCESS_TOKEN_ISSUER",
+			defaultAccessTokenIssuer,
+		),
+		AccessAudience: stringFromEnv(
+			"IDENTITY_ACCESS_TOKEN_AUDIENCE",
+			defaultAccessTokenAudience,
+		),
+		AccessTTL:  accessTTL,
+		RefreshTTL: refreshTTL,
+	}, nil
 }
 
 func loadPostgresConfig(environment string) (PostgresConfig, error) {

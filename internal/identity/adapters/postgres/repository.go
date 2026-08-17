@@ -199,6 +199,257 @@ func (r *Repository) VerifyEmail(
 	}, nil
 }
 
+func (r *Repository) FindLoginIdentity(
+	ctx context.Context,
+	normalizedEmail string,
+) (application.LoginIdentity, error) {
+	var (
+		user         domain.User
+		emailValue   string
+		passwordHash string
+	)
+
+	err := r.pool.QueryRow(ctx, `
+		SELECT
+			u.id, u.email, u.display_name, u.status, u.email_verified_at,
+			u.created_at, u.updated_at, u.deleted_at, u.version,
+			c.password_hash
+		FROM users u
+		JOIN user_credentials c ON c.user_id = u.id
+		WHERE u.normalized_email = $1
+		  AND u.deleted_at IS NULL
+	`, normalizedEmail).Scan(
+		&user.ID,
+		&emailValue,
+		&user.DisplayName,
+		&user.Status,
+		&user.EmailVerifiedAt,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+		&user.DeletedAt,
+		&user.Version,
+		&passwordHash,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return application.LoginIdentity{}, domain.ErrInvalidCredentials
+	}
+	if err != nil {
+		return application.LoginIdentity{}, fmt.Errorf("select login identity: %w", err)
+	}
+
+	email, err := domain.NewEmail(emailValue)
+	if err != nil {
+		return application.LoginIdentity{}, fmt.Errorf("read stored email: %w", err)
+	}
+	user.Email = email
+
+	return application.LoginIdentity{
+		User:         user,
+		PasswordHash: passwordHash,
+	}, nil
+}
+
+func (r *Repository) CreateSession(
+	ctx context.Context,
+	record application.SessionRecord,
+) error {
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO user_sessions (
+			id, user_id, refresh_token_hash, user_agent, ip_address,
+			expires_at, last_used_at, created_at
+		) VALUES ($1, $2, $3, $4, NULLIF($5, '')::inet, $6, $7, $7)
+	`,
+		record.ID,
+		record.UserID,
+		record.RefreshTokenHash,
+		record.UserAgent,
+		record.IPAddress,
+		record.ExpiresAt,
+		record.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("insert user session: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Repository) RotateRefreshToken(
+	ctx context.Context,
+	currentTokenHash string,
+	newTokenHash string,
+	userAgent string,
+	ipAddress string,
+	now time.Time,
+) (application.SessionIdentity, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return application.SessionIdentity{}, fmt.Errorf("begin refresh rotation transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	var (
+		sessionID uuid.UUID
+		expiresAt time.Time
+		revokedAt *time.Time
+		user      domain.User
+		emailText string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT
+			s.id, s.expires_at, s.revoked_at,
+			u.id, u.email, u.display_name, u.status, u.email_verified_at,
+			u.created_at, u.updated_at, u.deleted_at, u.version
+		FROM user_sessions s
+		JOIN users u ON u.id = s.user_id
+		WHERE s.refresh_token_hash = $1
+		FOR UPDATE OF s, u
+	`, currentTokenHash).Scan(
+		&sessionID,
+		&expiresAt,
+		&revokedAt,
+		&user.ID,
+		&emailText,
+		&user.DisplayName,
+		&user.Status,
+		&user.EmailVerifiedAt,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+		&user.DeletedAt,
+		&user.Version,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return r.handlePossibleRefreshReuse(ctx, tx, currentTokenHash, now)
+	}
+	if err != nil {
+		return application.SessionIdentity{}, fmt.Errorf("select user session: %w", err)
+	}
+	email, err := domain.NewEmail(emailText)
+	if err != nil {
+		return application.SessionIdentity{}, fmt.Errorf("read stored email: %w", err)
+	}
+	user.Email = email
+
+	if revokedAt != nil {
+		return application.SessionIdentity{}, domain.ErrSessionRevoked
+	}
+	if !now.Before(expiresAt) {
+		return application.SessionIdentity{}, domain.ErrSessionExpired
+	}
+	if user.DeletedAt != nil || user.Status != domain.UserStatusActive {
+		if _, err := tx.Exec(ctx, `
+			UPDATE user_sessions SET revoked_at = $2 WHERE id = $1
+		`, sessionID, now); err != nil {
+			return application.SessionIdentity{}, fmt.Errorf("revoke unavailable account session: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return application.SessionIdentity{}, fmt.Errorf("commit unavailable account revocation: %w", err)
+		}
+		return application.SessionIdentity{}, domain.ErrAccountUnavailable
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO used_refresh_tokens (token_hash, session_id, used_at, expires_at)
+		VALUES ($1, $2, $3, $4)
+	`, currentTokenHash, sessionID, now, expiresAt); err != nil {
+		return application.SessionIdentity{}, fmt.Errorf("record used refresh token: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE user_sessions
+		SET refresh_token_hash = $2,
+			user_agent = $3,
+			ip_address = NULLIF($4, '')::inet,
+			last_used_at = $5
+		WHERE id = $1
+	`, sessionID, newTokenHash, userAgent, ipAddress, now); err != nil {
+		return application.SessionIdentity{}, fmt.Errorf("rotate refresh token: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return application.SessionIdentity{}, fmt.Errorf("commit refresh rotation: %w", err)
+	}
+
+	return application.SessionIdentity{
+		ID:        sessionID,
+		User:      user,
+		ExpiresAt: expiresAt,
+	}, nil
+}
+
+func (r *Repository) handlePossibleRefreshReuse(
+	ctx context.Context,
+	tx pgx.Tx,
+	tokenHash string,
+	now time.Time,
+) (application.SessionIdentity, error) {
+	var sessionID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT s.id
+		FROM used_refresh_tokens t
+		JOIN user_sessions s ON s.id = t.session_id
+		WHERE t.token_hash = $1
+		FOR UPDATE OF s
+	`, tokenHash).Scan(&sessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return application.SessionIdentity{}, domain.ErrRefreshTokenInvalid
+	}
+	if err != nil {
+		return application.SessionIdentity{}, fmt.Errorf("select used refresh token: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE user_sessions
+		SET revoked_at = COALESCE(revoked_at, $2)
+		WHERE id = $1
+	`, sessionID, now); err != nil {
+		return application.SessionIdentity{}, fmt.Errorf("revoke replayed session: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return application.SessionIdentity{}, fmt.Errorf("commit replayed session revocation: %w", err)
+	}
+
+	return application.SessionIdentity{}, domain.ErrRefreshTokenReused
+}
+
+func (r *Repository) RevokeSession(
+	ctx context.Context,
+	tokenHash string,
+	now time.Time,
+) error {
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE user_sessions
+		SET revoked_at = COALESCE(revoked_at, $2)
+		WHERE refresh_token_hash = $1
+		   OR id IN (
+			SELECT session_id
+			FROM used_refresh_tokens
+			WHERE token_hash = $1
+		   )
+	`, tokenHash, now); err != nil {
+		return fmt.Errorf("revoke user session: %w", err)
+	}
+
+	return nil
+}
+
+func (r *Repository) RevokeAllSessions(
+	ctx context.Context,
+	userID uuid.UUID,
+	now time.Time,
+) (int64, error) {
+	result, err := r.pool.Exec(ctx, `
+		UPDATE user_sessions
+		SET revoked_at = $2
+		WHERE user_id = $1
+		  AND revoked_at IS NULL
+	`, userID, now)
+	if err != nil {
+		return 0, fmt.Errorf("revoke all user sessions: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
 func isConstraint(err error, constraint string) bool {
 	var postgresError *pgconn.PgError
 	return errors.As(err, &postgresError) &&

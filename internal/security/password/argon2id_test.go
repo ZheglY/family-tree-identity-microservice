@@ -46,6 +46,18 @@ func TestHasherUsesUniqueSalt(t *testing.T) {
 	}
 }
 
+func TestHasherDummyHashIsValidAndDoesNotMatch(t *testing.T) {
+	hasher := NewHasher()
+
+	valid, err := hasher.Verify("untrusted password value", hasher.DummyHash())
+	if err != nil {
+		t.Fatalf("Verify() dummy hash error = %v", err)
+	}
+	if valid {
+		t.Fatal("untrusted password matched dummy hash")
+	}
+}
+
 func TestValidateRejectsShortPassword(t *testing.T) {
 	if err := Validate("too short"); err == nil {
 		t.Fatal("Validate() error = nil, want error")

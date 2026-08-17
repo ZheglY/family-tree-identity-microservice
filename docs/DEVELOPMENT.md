@@ -61,6 +61,22 @@ The standard gRPC health service reports `NOT_SERVING` if its PostgreSQL readine
 
 In development and test environments the verification-email adapter writes a one-time verification URL to the structured log. The raw token is never stored in PostgreSQL. Production startup is intentionally rejected until a real transactional email or outbox adapter is configured.
 
+## Access and refresh tokens
+
+Access tokens are short-lived JWTs signed with Ed25519. Generate a persistent local key pair with:
+
+```powershell
+go run ./cmd/access-keygen
+```
+
+Copy `IDENTITY_ACCESS_TOKEN_PRIVATE_KEY_BASE64` into the local `.env`. The command also prints the public key for diagnostics; the Identity gRPC API exposes the active public key and its validation parameters through `GetAccessTokenPublicKey`, so Family API can verify access tokens locally.
+
+If the private key is omitted in development, the service creates an ephemeral key and logs a warning. Every outstanding access token becomes invalid after a restart. Production configuration requires a persistent private key.
+
+Refresh tokens are opaque random values. PostgreSQL stores only their SHA-256 hashes. Every successful refresh replaces the current token and records the previous hash in `used_refresh_tokens`. Reusing a replaced token revokes the entire affected session. Session expiry is absolute and defaults to 30 days; access token expiry defaults to 15 minutes.
+
+The gRPC server is an internal service boundary. Production deployment must restrict it to the private service network and add authenticated transport before exposing it outside that boundary.
+
 ## Protobuf
 
 Install the pinned code generators:

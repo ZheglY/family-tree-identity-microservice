@@ -50,8 +50,8 @@ func TestRunnerUpDownIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentVersion() error = %v", err)
 	}
-	if version != 1 {
-		t.Fatalf("current version = %d, want 1", version)
+	if version != 2 {
+		t.Fatalf("current version = %d, want 2", version)
 	}
 
 	var usersTableExists bool
@@ -67,6 +67,13 @@ func TestRunnerUpDownIntegration(t *testing.T) {
 
 	if err := runner.Down(ctx, 1); err != nil {
 		t.Fatalf("Down() error = %v", err)
+	}
+	version, err = runner.CurrentVersion(ctx)
+	if err != nil {
+		t.Fatalf("CurrentVersion() after Down error = %v", err)
+	}
+	if version != 1 {
+		t.Fatalf("version after Down = %d, want 1", version)
 	}
 
 	if err := runner.Up(ctx); err != nil {

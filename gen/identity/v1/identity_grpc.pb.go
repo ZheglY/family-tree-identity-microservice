@@ -19,8 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	IdentityService_Register_FullMethodName    = "/identity.v1.IdentityService/Register"
-	IdentityService_VerifyEmail_FullMethodName = "/identity.v1.IdentityService/VerifyEmail"
+	IdentityService_Register_FullMethodName                = "/identity.v1.IdentityService/Register"
+	IdentityService_VerifyEmail_FullMethodName             = "/identity.v1.IdentityService/VerifyEmail"
+	IdentityService_Login_FullMethodName                   = "/identity.v1.IdentityService/Login"
+	IdentityService_RefreshSession_FullMethodName          = "/identity.v1.IdentityService/RefreshSession"
+	IdentityService_Logout_FullMethodName                  = "/identity.v1.IdentityService/Logout"
+	IdentityService_LogoutAll_FullMethodName               = "/identity.v1.IdentityService/LogoutAll"
+	IdentityService_GetAccessTokenPublicKey_FullMethodName = "/identity.v1.IdentityService/GetAccessTokenPublicKey"
 )
 
 // IdentityServiceClient is the client API for IdentityService service.
@@ -29,6 +34,11 @@ const (
 type IdentityServiceClient interface {
 	Register(ctx context.Context, in *RegisterRequest, opts ...grpc.CallOption) (*RegisterResponse, error)
 	VerifyEmail(ctx context.Context, in *VerifyEmailRequest, opts ...grpc.CallOption) (*VerifyEmailResponse, error)
+	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*SessionResponse, error)
+	RefreshSession(ctx context.Context, in *RefreshSessionRequest, opts ...grpc.CallOption) (*SessionResponse, error)
+	Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error)
+	LogoutAll(ctx context.Context, in *LogoutAllRequest, opts ...grpc.CallOption) (*LogoutAllResponse, error)
+	GetAccessTokenPublicKey(ctx context.Context, in *GetAccessTokenPublicKeyRequest, opts ...grpc.CallOption) (*GetAccessTokenPublicKeyResponse, error)
 }
 
 type identityServiceClient struct {
@@ -59,12 +69,67 @@ func (c *identityServiceClient) VerifyEmail(ctx context.Context, in *VerifyEmail
 	return out, nil
 }
 
+func (c *identityServiceClient) Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*SessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SessionResponse)
+	err := c.cc.Invoke(ctx, IdentityService_Login_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *identityServiceClient) RefreshSession(ctx context.Context, in *RefreshSessionRequest, opts ...grpc.CallOption) (*SessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SessionResponse)
+	err := c.cc.Invoke(ctx, IdentityService_RefreshSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *identityServiceClient) Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LogoutResponse)
+	err := c.cc.Invoke(ctx, IdentityService_Logout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *identityServiceClient) LogoutAll(ctx context.Context, in *LogoutAllRequest, opts ...grpc.CallOption) (*LogoutAllResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LogoutAllResponse)
+	err := c.cc.Invoke(ctx, IdentityService_LogoutAll_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *identityServiceClient) GetAccessTokenPublicKey(ctx context.Context, in *GetAccessTokenPublicKeyRequest, opts ...grpc.CallOption) (*GetAccessTokenPublicKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccessTokenPublicKeyResponse)
+	err := c.cc.Invoke(ctx, IdentityService_GetAccessTokenPublicKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IdentityServiceServer is the server API for IdentityService service.
 // All implementations must embed UnimplementedIdentityServiceServer
 // for forward compatibility.
 type IdentityServiceServer interface {
 	Register(context.Context, *RegisterRequest) (*RegisterResponse, error)
 	VerifyEmail(context.Context, *VerifyEmailRequest) (*VerifyEmailResponse, error)
+	Login(context.Context, *LoginRequest) (*SessionResponse, error)
+	RefreshSession(context.Context, *RefreshSessionRequest) (*SessionResponse, error)
+	Logout(context.Context, *LogoutRequest) (*LogoutResponse, error)
+	LogoutAll(context.Context, *LogoutAllRequest) (*LogoutAllResponse, error)
+	GetAccessTokenPublicKey(context.Context, *GetAccessTokenPublicKeyRequest) (*GetAccessTokenPublicKeyResponse, error)
 	mustEmbedUnimplementedIdentityServiceServer()
 }
 
@@ -80,6 +145,21 @@ func (UnimplementedIdentityServiceServer) Register(context.Context, *RegisterReq
 }
 func (UnimplementedIdentityServiceServer) VerifyEmail(context.Context, *VerifyEmailRequest) (*VerifyEmailResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VerifyEmail not implemented")
+}
+func (UnimplementedIdentityServiceServer) Login(context.Context, *LoginRequest) (*SessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Login not implemented")
+}
+func (UnimplementedIdentityServiceServer) RefreshSession(context.Context, *RefreshSessionRequest) (*SessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RefreshSession not implemented")
+}
+func (UnimplementedIdentityServiceServer) Logout(context.Context, *LogoutRequest) (*LogoutResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Logout not implemented")
+}
+func (UnimplementedIdentityServiceServer) LogoutAll(context.Context, *LogoutAllRequest) (*LogoutAllResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LogoutAll not implemented")
+}
+func (UnimplementedIdentityServiceServer) GetAccessTokenPublicKey(context.Context, *GetAccessTokenPublicKeyRequest) (*GetAccessTokenPublicKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAccessTokenPublicKey not implemented")
 }
 func (UnimplementedIdentityServiceServer) mustEmbedUnimplementedIdentityServiceServer() {}
 func (UnimplementedIdentityServiceServer) testEmbeddedByValue()                         {}
@@ -138,6 +218,96 @@ func _IdentityService_VerifyEmail_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _IdentityService_Login_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LoginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IdentityServiceServer).Login(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IdentityService_Login_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IdentityServiceServer).Login(ctx, req.(*LoginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _IdentityService_RefreshSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IdentityServiceServer).RefreshSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IdentityService_RefreshSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IdentityServiceServer).RefreshSession(ctx, req.(*RefreshSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _IdentityService_Logout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IdentityServiceServer).Logout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IdentityService_Logout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IdentityServiceServer).Logout(ctx, req.(*LogoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _IdentityService_LogoutAll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LogoutAllRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IdentityServiceServer).LogoutAll(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IdentityService_LogoutAll_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IdentityServiceServer).LogoutAll(ctx, req.(*LogoutAllRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _IdentityService_GetAccessTokenPublicKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAccessTokenPublicKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IdentityServiceServer).GetAccessTokenPublicKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IdentityService_GetAccessTokenPublicKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IdentityServiceServer).GetAccessTokenPublicKey(ctx, req.(*GetAccessTokenPublicKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // IdentityService_ServiceDesc is the grpc.ServiceDesc for IdentityService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -152,6 +322,26 @@ var IdentityService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VerifyEmail",
 			Handler:    _IdentityService_VerifyEmail_Handler,
+		},
+		{
+			MethodName: "Login",
+			Handler:    _IdentityService_Login_Handler,
+		},
+		{
+			MethodName: "RefreshSession",
+			Handler:    _IdentityService_RefreshSession_Handler,
+		},
+		{
+			MethodName: "Logout",
+			Handler:    _IdentityService_Logout_Handler,
+		},
+		{
+			MethodName: "LogoutAll",
+			Handler:    _IdentityService_LogoutAll_Handler,
+		},
+		{
+			MethodName: "GetAccessTokenPublicKey",
+			Handler:    _IdentityService_GetAccessTokenPublicKey_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

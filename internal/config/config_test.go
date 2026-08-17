@@ -43,6 +43,12 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if got, want := cfg.Email.VerificationURL, defaultEmailVerificationURL; got != want {
 		t.Fatalf("verification URL = %q, want %q", got, want)
 	}
+	if got, want := cfg.Tokens.AccessTTL, defaultAccessTokenTTL; got != want {
+		t.Fatalf("access token TTL = %s, want %s", got, want)
+	}
+	if got, want := cfg.Tokens.RefreshTTL, defaultRefreshTokenTTL; got != want {
+		t.Fatalf("refresh token TTL = %s, want %s", got, want)
+	}
 }
 
 func TestLoadParsesValues(t *testing.T) {
@@ -54,6 +60,8 @@ func TestLoadParsesValues(t *testing.T) {
 	setPostgresEnvironment(t, "")
 	t.Setenv("IDENTITY_POSTGRES_MAX_CONNECTIONS", "20")
 	t.Setenv("IDENTITY_POSTGRES_MIN_CONNECTIONS", "2")
+	t.Setenv("IDENTITY_ACCESS_TOKEN_TTL", "10m")
+	t.Setenv("IDENTITY_REFRESH_TOKEN_TTL", "168h")
 
 	cfg, err := Load()
 	if err != nil {
@@ -68,6 +76,9 @@ func TestLoadParsesValues(t *testing.T) {
 	}
 	if got, want := cfg.Postgres.MaxConnections, int32(20); got != want {
 		t.Fatalf("max PostgreSQL connections = %d, want %d", got, want)
+	}
+	if got, want := cfg.Tokens.AccessTTL, 10*time.Minute; got != want {
+		t.Fatalf("access token TTL = %s, want %s", got, want)
 	}
 }
 
@@ -99,6 +110,27 @@ func TestLoadRequiresPostgresURLInProduction(t *testing.T) {
 	}
 }
 
+func TestLoadRequiresAccessPrivateKeyInProduction(t *testing.T) {
+	setPostgresEnvironment(t, "")
+	t.Setenv("IDENTITY_ENVIRONMENT", "production")
+	t.Setenv("IDENTITY_POSTGRES_URL", "postgres://identity:test@postgres/identity")
+	t.Setenv("IDENTITY_ACCESS_TOKEN_PRIVATE_KEY_BASE64", "")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadRejectsRefreshTTLNotLongerThanAccessTTL(t *testing.T) {
+	setPostgresEnvironment(t, "")
+	t.Setenv("IDENTITY_ACCESS_TOKEN_TTL", "1h")
+	t.Setenv("IDENTITY_REFRESH_TOKEN_TTL", "1h")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
 func setPostgresEnvironment(t *testing.T, value string) {
 	t.Helper()
 
@@ -112,6 +144,12 @@ func setPostgresEnvironment(t *testing.T, value string) {
 		"IDENTITY_POSTGRES_CONNECT_TIMEOUT",
 		"IDENTITY_GRPC_READINESS_CHECK_INTERVAL",
 		"IDENTITY_GRPC_READINESS_CHECK_TIMEOUT",
+		"IDENTITY_ACCESS_TOKEN_PRIVATE_KEY_BASE64",
+		"IDENTITY_ACCESS_TOKEN_KEY_ID",
+		"IDENTITY_ACCESS_TOKEN_ISSUER",
+		"IDENTITY_ACCESS_TOKEN_AUDIENCE",
+		"IDENTITY_ACCESS_TOKEN_TTL",
+		"IDENTITY_REFRESH_TOKEN_TTL",
 	}
 
 	for _, key := range keys {

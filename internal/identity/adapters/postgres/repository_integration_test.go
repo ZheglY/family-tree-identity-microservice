@@ -73,6 +73,131 @@ func TestRepositoryRejectsExpiredVerificationTokenIntegration(t *testing.T) {
 	}
 }
 
+func TestRepositoryRotatesRefreshTokenAndRevokesReplayIntegration(t *testing.T) {
+	pool := openTestPool(t)
+	repository := NewRepository(pool)
+	truncateIdentityTables(t, pool)
+
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	record := registrationRecord(t, "session@example.com", "verification-hash", now)
+	if err := repository.CreateRegistration(ctx, record); err != nil {
+		t.Fatalf("CreateRegistration() error = %v", err)
+	}
+	user, err := repository.VerifyEmail(ctx, "verification-hash", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("VerifyEmail() error = %v", err)
+	}
+
+	identity, err := repository.FindLoginIdentity(ctx, user.Email.Normalized())
+	if err != nil {
+		t.Fatalf("FindLoginIdentity() error = %v", err)
+	}
+	if identity.User.ID != user.ID || identity.PasswordHash != record.PasswordHash {
+		t.Fatalf("login identity = %#v", identity)
+	}
+
+	sessionID := uuid.New()
+	expiresAt := now.Add(30 * 24 * time.Hour)
+	if err := repository.CreateSession(ctx, application.SessionRecord{
+		ID:               sessionID,
+		UserID:           user.ID,
+		RefreshTokenHash: "refresh-hash-1",
+		UserAgent:        "first browser",
+		IPAddress:        "127.0.0.1",
+		ExpiresAt:        expiresAt,
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	rotated, err := repository.RotateRefreshToken(
+		ctx,
+		"refresh-hash-1",
+		"refresh-hash-2",
+		"second browser",
+		"2001:db8::1",
+		now.Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("RotateRefreshToken() error = %v", err)
+	}
+	if rotated.ID != sessionID || rotated.User.ID != user.ID || !rotated.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("rotated session = %#v", rotated)
+	}
+
+	var usedCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM used_refresh_tokens WHERE token_hash = 'refresh-hash-1'
+	`).Scan(&usedCount); err != nil {
+		t.Fatalf("count used refresh tokens: %v", err)
+	}
+	if usedCount != 1 {
+		t.Fatalf("used refresh token count = %d, want 1", usedCount)
+	}
+
+	if _, err := repository.RotateRefreshToken(
+		ctx,
+		"refresh-hash-1",
+		"refresh-hash-3",
+		"attacker",
+		"",
+		now.Add(2*time.Hour),
+	); !errors.Is(err, domain.ErrRefreshTokenReused) {
+		t.Fatalf("replayed rotation error = %v, want refresh token reused", err)
+	}
+	if _, err := repository.RotateRefreshToken(
+		ctx,
+		"refresh-hash-2",
+		"refresh-hash-4",
+		"browser",
+		"",
+		now.Add(3*time.Hour),
+	); !errors.Is(err, domain.ErrSessionRevoked) {
+		t.Fatalf("rotation after replay error = %v, want session revoked", err)
+	}
+}
+
+func TestRepositoryRevokesOneAndAllSessionsIntegration(t *testing.T) {
+	pool := openTestPool(t)
+	repository := NewRepository(pool)
+	truncateIdentityTables(t, pool)
+
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	record := registrationRecord(t, "logout@example.com", "logout-verification", now)
+	if err := repository.CreateRegistration(ctx, record); err != nil {
+		t.Fatalf("CreateRegistration() error = %v", err)
+	}
+	user, err := repository.VerifyEmail(ctx, "logout-verification", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("VerifyEmail() error = %v", err)
+	}
+
+	for index, hash := range []string{"logout-hash-1", "logout-hash-2"} {
+		if err := repository.CreateSession(ctx, application.SessionRecord{
+			ID:               uuid.New(),
+			UserID:           user.ID,
+			RefreshTokenHash: hash,
+			ExpiresAt:        now.Add(24 * time.Hour),
+			CreatedAt:        now.Add(time.Duration(index) * time.Second),
+		}); err != nil {
+			t.Fatalf("CreateSession(%d) error = %v", index, err)
+		}
+	}
+
+	if err := repository.RevokeSession(ctx, "logout-hash-1", now.Add(time.Hour)); err != nil {
+		t.Fatalf("RevokeSession() error = %v", err)
+	}
+	revoked, err := repository.RevokeAllSessions(ctx, user.ID, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("RevokeAllSessions() error = %v", err)
+	}
+	if revoked != 1 {
+		t.Fatalf("revoked count = %d, want 1", revoked)
+	}
+}
+
 func registrationRecord(
 	t *testing.T,
 	emailValue string,
@@ -130,7 +255,7 @@ func truncateIdentityTables(t *testing.T, pool *pgxpool.Pool) {
 
 	if _, err := pool.Exec(
 		context.Background(),
-		"TRUNCATE one_time_tokens, user_sessions, user_credentials, users CASCADE",
+		"TRUNCATE used_refresh_tokens, one_time_tokens, user_sessions, user_credentials, users CASCADE",
 	); err != nil {
 		t.Fatalf("truncate identity tables: %v", err)
 	}

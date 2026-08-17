@@ -31,18 +31,27 @@ type Params struct {
 }
 
 type Hasher struct {
-	params Params
+	params    Params
+	dummyHash string
 }
 
 func NewHasher() *Hasher {
+	params := Params{
+		Memory:      19 * 1024,
+		Iterations:  2,
+		Parallelism: 1,
+		SaltLength:  16,
+		KeyLength:   32,
+	}
+	dummySalt := make([]byte, params.SaltLength)
+
 	return &Hasher{
-		params: Params{
-			Memory:      19 * 1024,
-			Iterations:  2,
-			Parallelism: 1,
-			SaltLength:  16,
-			KeyLength:   32,
-		},
+		params: params,
+		dummyHash: encodeHash(
+			[]byte("identity dummy password value"),
+			dummySalt,
+			params,
+		),
 	}
 }
 
@@ -70,24 +79,32 @@ func (h *Hasher) Hash(candidate string) (string, error) {
 		return "", fmt.Errorf("generate password salt: %w", err)
 	}
 
+	return encodeHash([]byte(candidate), salt, h.params), nil
+}
+
+func (h *Hasher) DummyHash() string {
+	return h.dummyHash
+}
+
+func encodeHash(candidate, salt []byte, params Params) string {
 	derivedKey := argon2.IDKey(
-		[]byte(candidate),
+		candidate,
 		salt,
-		h.params.Iterations,
-		h.params.Memory,
-		h.params.Parallelism,
-		h.params.KeyLength,
+		params.Iterations,
+		params.Memory,
+		params.Parallelism,
+		params.KeyLength,
 	)
 
 	return fmt.Sprintf(
 		"$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version,
-		h.params.Memory,
-		h.params.Iterations,
-		h.params.Parallelism,
+		params.Memory,
+		params.Iterations,
+		params.Parallelism,
 		base64.RawStdEncoding.EncodeToString(salt),
 		base64.RawStdEncoding.EncodeToString(derivedKey),
-	), nil
+	)
 }
 
 func (h *Hasher) Verify(candidate, encodedHash string) (bool, error) {

@@ -13,6 +13,7 @@ import (
 	"github.com/ZheglY/family-tree-identity-service/internal/platform/grpcserver"
 	"github.com/ZheglY/family-tree-identity-service/internal/platform/logger"
 	"github.com/ZheglY/family-tree-identity-service/internal/platform/postgres"
+	"github.com/ZheglY/family-tree-identity-service/internal/security/accesstoken"
 	passwordsecurity "github.com/ZheglY/family-tree-identity-service/internal/security/password"
 	tokensecurity "github.com/ZheglY/family-tree-identity-service/internal/security/token"
 )
@@ -60,14 +61,44 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("initialize verification mailer: %w", err)
 	}
 
+	var accessSigner *accesstoken.Signer
+	if cfg.Tokens.AccessPrivateKeyBase64 == "" {
+		accessSigner, err = accesstoken.NewEphemeralSigner(
+			cfg.Tokens.AccessKeyID,
+			cfg.Tokens.AccessIssuer,
+			cfg.Tokens.AccessAudience,
+			cfg.Tokens.AccessTTL,
+		)
+		if err == nil {
+			log.Warn("using ephemeral access token signing key; tokens will be invalid after restart")
+		}
+	} else {
+		accessSigner, err = accesstoken.NewSigner(
+			cfg.Tokens.AccessPrivateKeyBase64,
+			cfg.Tokens.AccessKeyID,
+			cfg.Tokens.AccessIssuer,
+			cfg.Tokens.AccessAudience,
+			cfg.Tokens.AccessTTL,
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("initialize access token signer: %w", err)
+	}
+
 	identityRepository := identitypostgres.NewRepository(database.Native())
 	identityService := application.NewService(
 		identityRepository,
 		passwordsecurity.NewHasher(),
 		tokensecurity.NewGenerator(),
+		accessSigner,
 		verificationMailer,
+		cfg.Tokens.RefreshTTL,
 	)
-	identityGRPCServer := identitygrpc.NewServer(identityService, log)
+	identityGRPCServer := identitygrpc.NewServer(
+		identityService,
+		log,
+		accessSigner.PublicKeyInfo(),
+	)
 
 	server := grpcserver.New(
 		log,
