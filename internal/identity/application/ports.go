@@ -52,6 +52,9 @@ type Repository interface {
 	) (SessionIdentity, error)
 	RevokeSession(context.Context, string, time.Time) error
 	RevokeAllSessions(context.Context, uuid.UUID, time.Time) (int64, error)
+	GetUser(context.Context, uuid.UUID) (domain.User, error)
+	ListSessions(context.Context, uuid.UUID, time.Time) ([]domain.UserSession, error)
+	RevokeOwnedSession(context.Context, uuid.UUID, uuid.UUID, time.Time) error
 }
 
 type PasswordHasher interface {

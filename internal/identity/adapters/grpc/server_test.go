@@ -20,6 +20,7 @@ type applicationStub struct {
 	user          domain.User
 	sessionResult application.SessionResult
 	revokedCount  int64
+	sessions      []domain.UserSession
 	err           error
 }
 
@@ -57,6 +58,21 @@ func (a applicationStub) Logout(context.Context, string) error {
 
 func (a applicationStub) LogoutAll(context.Context, uuid.UUID) (int64, error) {
 	return a.revokedCount, a.err
+}
+
+func (a applicationStub) GetUser(context.Context, uuid.UUID) (domain.User, error) {
+	return a.user, a.err
+}
+
+func (a applicationStub) ListSessions(
+	context.Context,
+	uuid.UUID,
+) ([]domain.UserSession, error) {
+	return a.sessions, a.err
+}
+
+func (a applicationStub) RevokeSession(context.Context, uuid.UUID, uuid.UUID) error {
+	return a.err
 }
 
 func TestRegisterMapsApplicationResponse(t *testing.T) {
@@ -167,6 +183,46 @@ func TestGetAccessTokenPublicKey(t *testing.T) {
 	}
 	if response.GetKeyId() != "test-key" || response.GetAlgorithm() != "EdDSA" {
 		t.Fatalf("unexpected public key response: %#v", response)
+	}
+}
+
+func TestGetUserMapsApplicationUser(t *testing.T) {
+	user := testUser(t, domain.UserStatusActive)
+	server := NewServer(applicationStub{user: user}, zap.NewNop(), testPublicKey())
+
+	response, err := server.GetUser(context.Background(), &identityv1.GetUserRequest{
+		UserId: user.ID.String(),
+	})
+	if err != nil {
+		t.Fatalf("GetUser() error = %v", err)
+	}
+	if response.GetUser().GetId() != user.ID.String() {
+		t.Fatalf("user response = %#v", response.GetUser())
+	}
+}
+
+func TestListSessionsMapsApplicationSessions(t *testing.T) {
+	userID := uuid.New()
+	sessionID := uuid.New()
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	server := NewServer(applicationStub{sessions: []domain.UserSession{{
+		ID:         sessionID,
+		UserID:     userID,
+		UserAgent:  "browser",
+		IPAddress:  "127.0.0.1",
+		CreatedAt:  now,
+		LastUsedAt: now.Add(time.Minute),
+		ExpiresAt:  now.Add(time.Hour),
+	}}}, zap.NewNop(), testPublicKey())
+
+	response, err := server.ListSessions(context.Background(), &identityv1.ListSessionsRequest{
+		UserId: userID.String(),
+	})
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(response.GetSessions()) != 1 || response.GetSessions()[0].GetId() != sessionID.String() {
+		t.Fatalf("sessions response = %#v", response.GetSessions())
 	}
 }
 

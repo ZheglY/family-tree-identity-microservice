@@ -21,6 +21,9 @@ type IdentityApplication interface {
 	RefreshSession(context.Context, application.RefreshSessionCommand) (application.SessionResult, error)
 	Logout(context.Context, string) error
 	LogoutAll(context.Context, uuid.UUID) (int64, error)
+	GetUser(context.Context, uuid.UUID) (domain.User, error)
+	ListSessions(context.Context, uuid.UUID) ([]domain.UserSession, error)
+	RevokeSession(context.Context, uuid.UUID, uuid.UUID) error
 }
 
 type Server struct {
@@ -134,6 +137,79 @@ func (s *Server) GetAccessTokenPublicKey(
 	}, nil
 }
 
+func (s *Server) GetUser(
+	ctx context.Context,
+	request *identityv1.GetUserRequest,
+) (*identityv1.GetUserResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	userID, err := uuid.Parse(request.GetUserId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "user ID is invalid")
+	}
+
+	user, err := s.application.GetUser(ctx, userID)
+	if err != nil {
+		return nil, s.mapError("get user", err)
+	}
+
+	return &identityv1.GetUserResponse{User: mapUser(user)}, nil
+}
+
+func (s *Server) ListSessions(
+	ctx context.Context,
+	request *identityv1.ListSessionsRequest,
+) (*identityv1.ListSessionsResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	userID, err := uuid.Parse(request.GetUserId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "user ID is invalid")
+	}
+
+	sessions, err := s.application.ListSessions(ctx, userID)
+	if err != nil {
+		return nil, s.mapError("list sessions", err)
+	}
+	responseSessions := make([]*identityv1.UserSession, 0, len(sessions))
+	for _, session := range sessions {
+		responseSessions = append(responseSessions, &identityv1.UserSession{
+			Id:             session.ID.String(),
+			UserAgent:      session.UserAgent,
+			IpAddress:      session.IPAddress,
+			CreatedAtUnix:  session.CreatedAt.Unix(),
+			LastUsedAtUnix: session.LastUsedAt.Unix(),
+			ExpiresAtUnix:  session.ExpiresAt.Unix(),
+		})
+	}
+
+	return &identityv1.ListSessionsResponse{Sessions: responseSessions}, nil
+}
+
+func (s *Server) RevokeSession(
+	ctx context.Context,
+	request *identityv1.RevokeSessionRequest,
+) (*identityv1.RevokeSessionResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	userID, err := uuid.Parse(request.GetUserId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "user ID is invalid")
+	}
+	sessionID, err := uuid.Parse(request.GetSessionId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "session ID is invalid")
+	}
+	if err := s.application.RevokeSession(ctx, userID, sessionID); err != nil {
+		return nil, s.mapError("revoke session", err)
+	}
+
+	return &identityv1.RevokeSessionResponse{}, nil
+}
+
 func (s *Server) Register(
 	ctx context.Context,
 	request *identityv1.RegisterRequest,
@@ -201,6 +277,9 @@ func (s *Server) mapError(operation string, err error) error {
 		errors.Is(err, domain.ErrSessionExpired),
 		errors.Is(err, domain.ErrSessionRevoked):
 		return status.Error(codes.Unauthenticated, "session is invalid")
+	case errors.Is(err, domain.ErrUserNotFound),
+		errors.Is(err, domain.ErrSessionNotFound):
+		return status.Error(codes.NotFound, "resource was not found")
 	default:
 		s.log.Error(operation, zap.Error(err))
 		return status.Error(codes.Internal, "internal server error")

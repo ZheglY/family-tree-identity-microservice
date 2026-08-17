@@ -450,6 +450,125 @@ func (r *Repository) RevokeAllSessions(
 	return result.RowsAffected(), nil
 }
 
+func (r *Repository) GetUser(
+	ctx context.Context,
+	userID uuid.UUID,
+) (domain.User, error) {
+	var (
+		user      domain.User
+		emailText string
+	)
+	err := r.pool.QueryRow(ctx, `
+		SELECT
+			id, email, display_name, status, email_verified_at,
+			created_at, updated_at, deleted_at, version
+		FROM users
+		WHERE id = $1
+		  AND deleted_at IS NULL
+	`, userID).Scan(
+		&user.ID,
+		&emailText,
+		&user.DisplayName,
+		&user.Status,
+		&user.EmailVerifiedAt,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+		&user.DeletedAt,
+		&user.Version,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.User{}, domain.ErrUserNotFound
+	}
+	if err != nil {
+		return domain.User{}, fmt.Errorf("select user: %w", err)
+	}
+	email, err := domain.NewEmail(emailText)
+	if err != nil {
+		return domain.User{}, fmt.Errorf("read stored email: %w", err)
+	}
+	user.Email = email
+
+	return user, nil
+}
+
+func (r *Repository) ListSessions(
+	ctx context.Context,
+	userID uuid.UUID,
+	now time.Time,
+) ([]domain.UserSession, error) {
+	var userExists bool
+	if err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL
+		)
+	`, userID).Scan(&userExists); err != nil {
+		return nil, fmt.Errorf("check session owner: %w", err)
+	}
+	if !userExists {
+		return nil, domain.ErrUserNotFound
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			id, user_id, user_agent, COALESCE(ip_address::text, ''),
+			created_at, last_used_at, expires_at
+		FROM user_sessions
+		WHERE user_id = $1
+		  AND revoked_at IS NULL
+		  AND expires_at > $2
+		ORDER BY last_used_at DESC, id
+	`, userID, now)
+	if err != nil {
+		return nil, fmt.Errorf("select user sessions: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := make([]domain.UserSession, 0)
+	for rows.Next() {
+		var session domain.UserSession
+		if err := rows.Scan(
+			&session.ID,
+			&session.UserID,
+			&session.UserAgent,
+			&session.IPAddress,
+			&session.CreatedAt,
+			&session.LastUsedAt,
+			&session.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan user session: %w", err)
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate user sessions: %w", err)
+	}
+
+	return sessions, nil
+}
+
+func (r *Repository) RevokeOwnedSession(
+	ctx context.Context,
+	userID uuid.UUID,
+	sessionID uuid.UUID,
+	now time.Time,
+) error {
+	result, err := r.pool.Exec(ctx, `
+		UPDATE user_sessions
+		SET revoked_at = $3
+		WHERE id = $1
+		  AND user_id = $2
+		  AND revoked_at IS NULL
+	`, sessionID, userID, now)
+	if err != nil {
+		return fmt.Errorf("revoke owned session: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return domain.ErrSessionNotFound
+	}
+
+	return nil
+}
+
 func isConstraint(err error, constraint string) bool {
 	var postgresError *pgconn.PgError
 	return errors.As(err, &postgresError) &&

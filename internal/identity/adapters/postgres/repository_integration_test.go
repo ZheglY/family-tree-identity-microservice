@@ -198,6 +198,91 @@ func TestRepositoryRevokesOneAndAllSessionsIntegration(t *testing.T) {
 	}
 }
 
+func TestRepositoryGetsUserAndManagesOwnedSessionsIntegration(t *testing.T) {
+	pool := openTestPool(t)
+	repository := NewRepository(pool)
+	truncateIdentityTables(t, pool)
+
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	record := registrationRecord(t, "account@example.com", "account-verification", now)
+	if err := repository.CreateRegistration(ctx, record); err != nil {
+		t.Fatalf("CreateRegistration() error = %v", err)
+	}
+	user, err := repository.VerifyEmail(ctx, "account-verification", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("VerifyEmail() error = %v", err)
+	}
+
+	storedUser, err := repository.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUser() error = %v", err)
+	}
+	if storedUser.ID != user.ID || storedUser.Status != domain.UserStatusActive {
+		t.Fatalf("stored user = %#v", storedUser)
+	}
+	if _, err := repository.GetUser(ctx, uuid.New()); !errors.Is(err, domain.ErrUserNotFound) {
+		t.Fatalf("missing GetUser() error = %v, want user not found", err)
+	}
+
+	activeSessionID := uuid.New()
+	for _, session := range []application.SessionRecord{
+		{
+			ID:               activeSessionID,
+			UserID:           user.ID,
+			RefreshTokenHash: "account-refresh-active",
+			UserAgent:        "active browser",
+			IPAddress:        "127.0.0.1",
+			ExpiresAt:        now.Add(24 * time.Hour),
+			CreatedAt:        now,
+		},
+		{
+			ID:               uuid.New(),
+			UserID:           user.ID,
+			RefreshTokenHash: "account-refresh-expired",
+			UserAgent:        "expired browser",
+			ExpiresAt:        now.Add(time.Hour),
+			CreatedAt:        now,
+		},
+	} {
+		if err := repository.CreateSession(ctx, session); err != nil {
+			t.Fatalf("CreateSession() error = %v", err)
+		}
+	}
+
+	sessions, err := repository.ListSessions(ctx, user.ID, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != activeSessionID {
+		t.Fatalf("active sessions = %#v", sessions)
+	}
+
+	if err := repository.RevokeOwnedSession(
+		ctx,
+		uuid.New(),
+		activeSessionID,
+		now.Add(3*time.Hour),
+	); !errors.Is(err, domain.ErrSessionNotFound) {
+		t.Fatalf("foreign revoke error = %v, want session not found", err)
+	}
+	if err := repository.RevokeOwnedSession(
+		ctx,
+		user.ID,
+		activeSessionID,
+		now.Add(3*time.Hour),
+	); err != nil {
+		t.Fatalf("RevokeOwnedSession() error = %v", err)
+	}
+	sessions, err = repository.ListSessions(ctx, user.ID, now.Add(3*time.Hour))
+	if err != nil {
+		t.Fatalf("ListSessions() after revoke error = %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("sessions after revoke = %#v", sessions)
+	}
+}
+
 func registrationRecord(
 	t *testing.T,
 	emailValue string,

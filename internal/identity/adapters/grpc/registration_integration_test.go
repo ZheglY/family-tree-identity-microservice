@@ -191,6 +191,25 @@ func TestRegistrationVerticalSliceIntegration(t *testing.T) {
 	if claims.Subject != registerResponse.GetUser().GetId() || claims.SessionID == "" {
 		t.Fatalf("unexpected access token claims: %#v", claims)
 	}
+	getUserResponse, err := client.GetUser(ctx, &identityv1.GetUserRequest{
+		UserId: registerResponse.GetUser().GetId(),
+	})
+	if err != nil {
+		t.Fatalf("GetUser() error = %v", err)
+	}
+	if getUserResponse.GetUser().GetEmail() != "family@example.com" {
+		t.Fatalf("GetUser() response = %#v", getUserResponse.GetUser())
+	}
+	listSessionsResponse, err := client.ListSessions(ctx, &identityv1.ListSessionsRequest{
+		UserId: registerResponse.GetUser().GetId(),
+	})
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if len(listSessionsResponse.GetSessions()) != 1 ||
+		listSessionsResponse.GetSessions()[0].GetId() != claims.SessionID {
+		t.Fatalf("ListSessions() response = %#v", listSessionsResponse.GetSessions())
+	}
 
 	var storedRefreshHash string
 	if err := testDatabase.Pool.QueryRow(ctx, `
@@ -261,14 +280,29 @@ func TestRegistrationVerticalSliceIntegration(t *testing.T) {
 		}
 		activeRefreshTokens = append(activeRefreshTokens, response.GetRefreshToken())
 	}
+	listSessionsResponse, err = client.ListSessions(ctx, &identityv1.ListSessionsRequest{
+		UserId: registerResponse.GetUser().GetId(),
+	})
+	if err != nil {
+		t.Fatalf("ListSessions() before revoke error = %v", err)
+	}
+	if len(listSessionsResponse.GetSessions()) != 2 {
+		t.Fatalf("active session count = %d, want 2", len(listSessionsResponse.GetSessions()))
+	}
+	if _, err := client.RevokeSession(ctx, &identityv1.RevokeSessionRequest{
+		UserId:    registerResponse.GetUser().GetId(),
+		SessionId: listSessionsResponse.GetSessions()[0].GetId(),
+	}); err != nil {
+		t.Fatalf("RevokeSession() error = %v", err)
+	}
 	logoutAllResponse, err := client.LogoutAll(ctx, &identityv1.LogoutAllRequest{
 		UserId: registerResponse.GetUser().GetId(),
 	})
 	if err != nil {
 		t.Fatalf("LogoutAll() error = %v", err)
 	}
-	if logoutAllResponse.GetRevokedSessionCount() != 2 {
-		t.Fatalf("revoked session count = %d, want 2", logoutAllResponse.GetRevokedSessionCount())
+	if logoutAllResponse.GetRevokedSessionCount() != 1 {
+		t.Fatalf("revoked session count = %d, want 1", logoutAllResponse.GetRevokedSessionCount())
 	}
 	for _, refreshToken := range activeRefreshTokens {
 		_, err := client.RefreshSession(ctx, &identityv1.RefreshSessionRequest{

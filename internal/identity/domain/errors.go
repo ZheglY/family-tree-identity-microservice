@@ -18,4 +18,6 @@ var (
 	ErrRefreshTokenReused       = errors.New("refresh token was already used")
 	ErrSessionExpired           = errors.New("session is expired")
 	ErrSessionRevoked           = errors.New("session is revoked")
+	ErrUserNotFound             = errors.New("user is not found")
+	ErrSessionNotFound          = errors.New("session is not found")
 )

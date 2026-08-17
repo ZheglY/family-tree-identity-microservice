@@ -301,6 +301,37 @@ func (s *Service) LogoutAll(
 	return s.repository.RevokeAllSessions(ctx, userID, s.now())
 }
 
+func (s *Service) GetUser(
+	ctx context.Context,
+	userID uuid.UUID,
+) (domain.User, error) {
+	if userID == uuid.Nil {
+		return domain.User{}, domain.ErrUserNotFound
+	}
+	return s.repository.GetUser(ctx, userID)
+}
+
+func (s *Service) ListSessions(
+	ctx context.Context,
+	userID uuid.UUID,
+) ([]domain.UserSession, error) {
+	if userID == uuid.Nil {
+		return nil, domain.ErrUserNotFound
+	}
+	return s.repository.ListSessions(ctx, userID, s.now())
+}
+
+func (s *Service) RevokeSession(
+	ctx context.Context,
+	userID uuid.UUID,
+	sessionID uuid.UUID,
+) error {
+	if userID == uuid.Nil || sessionID == uuid.Nil {
+		return domain.ErrSessionNotFound
+	}
+	return s.repository.RevokeOwnedSession(ctx, userID, sessionID, s.now())
+}
+
 func (s *Service) rejectInvalidCredentials(candidate string) error {
 	if len(candidate) > maxPasswordBytes {
 		candidate = ""

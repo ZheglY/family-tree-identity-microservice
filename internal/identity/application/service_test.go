@@ -21,6 +21,7 @@ type repositoryStub struct {
 	sessionErr     error
 	rotateErr      error
 	revokedHash    string
+	sessions       []domain.UserSession
 }
 
 func (r *repositoryStub) CreateRegistration(
@@ -78,6 +79,27 @@ func (r *repositoryStub) RevokeAllSessions(
 	time.Time,
 ) (int64, error) {
 	return 2, r.sessionErr
+}
+
+func (r *repositoryStub) GetUser(context.Context, uuid.UUID) (domain.User, error) {
+	return r.user, r.err
+}
+
+func (r *repositoryStub) ListSessions(
+	context.Context,
+	uuid.UUID,
+	time.Time,
+) ([]domain.UserSession, error) {
+	return r.sessions, r.err
+}
+
+func (r *repositoryStub) RevokeOwnedSession(
+	context.Context,
+	uuid.UUID,
+	uuid.UUID,
+	time.Time,
+) error {
+	return r.err
 }
 
 type passwordHasherStub struct {
