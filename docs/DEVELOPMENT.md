@@ -59,6 +59,25 @@ go run ./cmd/identity-service
 
 The standard gRPC health service reports `NOT_SERVING` if its PostgreSQL readiness check fails.
 
+In development and test environments the verification-email adapter writes a one-time verification URL to the structured log. The raw token is never stored in PostgreSQL. Production startup is intentionally rejected until a real transactional email or outbox adapter is configured.
+
+## Protobuf
+
+Install the pinned code generators:
+
+```powershell
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+```
+
+Regenerate the `identity.v1` Go contract after changing a `.proto` file:
+
+```powershell
+./scripts/generate-proto.ps1
+```
+
+Generated files under `gen/identity/v1` are committed together with their source contract.
+
 ## Tests
 
 Unit tests do not require PostgreSQL. To include repository and migration integration tests:

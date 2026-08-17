@@ -4,10 +4,17 @@ import (
 	"context"
 	"fmt"
 
+	identityv1 "github.com/ZheglY/family-tree-identity-service/gen/identity/v1"
 	"github.com/ZheglY/family-tree-identity-service/internal/config"
+	identitygrpc "github.com/ZheglY/family-tree-identity-service/internal/identity/adapters/grpc"
+	"github.com/ZheglY/family-tree-identity-service/internal/identity/adapters/mailer"
+	identitypostgres "github.com/ZheglY/family-tree-identity-service/internal/identity/adapters/postgres"
+	"github.com/ZheglY/family-tree-identity-service/internal/identity/application"
 	"github.com/ZheglY/family-tree-identity-service/internal/platform/grpcserver"
 	"github.com/ZheglY/family-tree-identity-service/internal/platform/logger"
 	"github.com/ZheglY/family-tree-identity-service/internal/platform/postgres"
+	passwordsecurity "github.com/ZheglY/family-tree-identity-service/internal/security/password"
+	tokensecurity "github.com/ZheglY/family-tree-identity-service/internal/security/token"
 )
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -22,6 +29,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 	defer func() {
 		_ = log.Sync()
 	}()
+
+	if cfg.App.Environment == "production" {
+		return fmt.Errorf("production verification mailer is not configured")
+	}
 
 	database, err := postgres.Open(
 		ctx,
@@ -41,6 +52,23 @@ func Run(ctx context.Context, cfg config.Config) error {
 	}
 	defer database.Close()
 
+	verificationMailer, err := mailer.NewLogMailer(
+		log,
+		cfg.Email.VerificationURL,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize verification mailer: %w", err)
+	}
+
+	identityRepository := identitypostgres.NewRepository(database.Native())
+	identityService := application.NewService(
+		identityRepository,
+		passwordsecurity.NewHasher(),
+		tokensecurity.NewGenerator(),
+		verificationMailer,
+	)
+	identityGRPCServer := identitygrpc.NewServer(identityService, log)
+
 	server := grpcserver.New(
 		log,
 		cfg.GRPC.Reflection,
@@ -49,6 +77,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 			cfg.GRPC.ReadinessCheckInterval,
 			cfg.GRPC.ReadinessCheckTimeout,
 		),
+	)
+	identityv1.RegisterIdentityServiceServer(
+		server.Registrar(),
+		identityGRPCServer,
 	)
 	if err := server.Run(
 		ctx,

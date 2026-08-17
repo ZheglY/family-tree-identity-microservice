@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package identity.v1;
+
+option go_package = "github.com/ZheglY/family-tree-identity-service/gen/identity/v1;identityv1";
+
+service IdentityService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
+}
+
+enum UserStatus {
+  USER_STATUS_UNSPECIFIED = 0;
+  USER_STATUS_PENDING = 1;
+  USER_STATUS_ACTIVE = 2;
+  USER_STATUS_BLOCKED = 3;
+  USER_STATUS_DELETING = 4;
+}
+
+message User {
+  string id = 1;
+  string email = 2;
+  string display_name = 3;
+  UserStatus status = 4;
+}
+
+message RegisterRequest {
+  string email = 1;
+  string password = 2;
+  string display_name = 3;
+}
+
+message RegisterResponse {
+  User user = 1;
+  bool verification_required = 2;
+}
+
+message VerifyEmailRequest {
+  string token = 1;
+}
+
+message VerifyEmailResponse {
+  User user = 1;
+}

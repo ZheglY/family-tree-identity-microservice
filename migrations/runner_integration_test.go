@@ -3,11 +3,10 @@ package migrations
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ZheglY/family-tree-identity-service/internal/testdatabase"
 	"go.uber.org/zap"
 )
 
@@ -17,22 +16,19 @@ func TestRunnerUpDownIntegration(t *testing.T) {
 		t.Skip("IDENTITY_TEST_DATABASE_URL is not set")
 	}
 
-	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	testDatabase, err := testdatabase.Open(context.Background(), databaseURL)
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
+		t.Fatalf("open isolated test database: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(poolConfig.ConnConfig.Database), "test") {
-		t.Fatalf("refusing to migrate non-test database %q", poolConfig.ConnConfig.Database)
-	}
+	t.Cleanup(func() {
+		if err := testDatabase.Close(); err != nil {
+			t.Errorf("close isolated test database: %v", err)
+		}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		t.Fatalf("create PostgreSQL pool: %v", err)
-	}
-	defer pool.Close()
+	pool := testDatabase.Pool
 
 	runner, err := NewRunner(pool, zap.NewNop())
 	if err != nil {
@@ -61,7 +57,7 @@ func TestRunnerUpDownIntegration(t *testing.T) {
 	var usersTableExists bool
 	if err := pool.QueryRow(
 		ctx,
-		"SELECT to_regclass('public.users') IS NOT NULL",
+		"SELECT to_regclass('users') IS NOT NULL",
 	).Scan(&usersTableExists); err != nil {
 		t.Fatalf("check users table: %v", err)
 	}

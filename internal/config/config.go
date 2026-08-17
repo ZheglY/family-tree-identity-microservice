@@ -24,12 +24,14 @@ const (
 	defaultPostgresConnectTimeout  = 5 * time.Second
 	defaultReadinessCheckInterval  = 5 * time.Second
 	defaultReadinessCheckTimeout   = 2 * time.Second
+	defaultEmailVerificationURL    = "http://localhost:3000/verify-email"
 )
 
 type Config struct {
 	App      AppConfig
 	GRPC     GRPCConfig
 	Postgres PostgresConfig
+	Email    EmailConfig
 	Logger   LoggerConfig
 }
 
@@ -54,6 +56,9 @@ func NewConfig(
 			ReadinessCheckTimeout:  defaultReadinessCheckTimeout,
 		},
 		Postgres: postgresConfig,
+		Email: EmailConfig{
+			VerificationURL: defaultEmailVerificationURL,
+		},
 		Logger: LoggerConfig{
 			Level: level,
 		},
@@ -81,6 +86,10 @@ type PostgresConfig struct {
 	MaxConnIdleTime   time.Duration
 	HealthCheckPeriod time.Duration
 	ConnectTimeout    time.Duration
+}
+
+type EmailConfig struct {
+	VerificationURL string
 }
 
 type LoggerConfig struct {
@@ -152,6 +161,10 @@ func Load() (Config, error) {
 	)
 	config.GRPC.ReadinessCheckInterval = readinessCheckInterval
 	config.GRPC.ReadinessCheckTimeout = readinessCheckTimeout
+	config.Email.VerificationURL = stringFromEnv(
+		"IDENTITY_EMAIL_VERIFICATION_URL",
+		defaultEmailVerificationURL,
+	)
 
 	return *config, nil
 }

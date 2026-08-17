@@ -11,6 +11,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("IDENTITY_SHUTDOWN_TIMEOUT", "")
 	t.Setenv("IDENTITY_LOG_LEVEL", "")
 	t.Setenv("IDENTITY_GRPC_REFLECTION", "")
+	t.Setenv("IDENTITY_EMAIL_VERIFICATION_URL", "")
 	setPostgresEnvironment(t, "")
 
 	cfg, err := Load()
@@ -38,6 +39,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	}
 	if got, want := cfg.Postgres.MaxConnections, int32(defaultPostgresMaxConnections); got != want {
 		t.Fatalf("max PostgreSQL connections = %d, want %d", got, want)
+	}
+	if got, want := cfg.Email.VerificationURL, defaultEmailVerificationURL; got != want {
+		t.Fatalf("verification URL = %q, want %q", got, want)
 	}
 }
 

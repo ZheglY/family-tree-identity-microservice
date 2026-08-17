@@ -92,6 +92,10 @@ func New(
 	return server
 }
 
+func (s *Server) Registrar() grpc.ServiceRegistrar {
+	return s.grpcServer
+}
+
 func (s *Server) Run(
 	ctx context.Context,
 	address string,
