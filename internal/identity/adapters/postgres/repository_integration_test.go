@@ -274,6 +274,14 @@ func TestRepositoryGetsUserAndManagesOwnedSessionsIntegration(t *testing.T) {
 	); err != nil {
 		t.Fatalf("RevokeOwnedSession() error = %v", err)
 	}
+	if err := repository.RevokeOwnedSession(
+		ctx,
+		user.ID,
+		activeSessionID,
+		now.Add(4*time.Hour),
+	); err != nil {
+		t.Fatalf("second RevokeOwnedSession() must be idempotent: %v", err)
+	}
 	sessions, err = repository.ListSessions(ctx, user.ID, now.Add(3*time.Hour))
 	if err != nil {
 		t.Fatalf("ListSessions() after revoke error = %v", err)

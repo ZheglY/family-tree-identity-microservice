@@ -554,10 +554,9 @@ func (r *Repository) RevokeOwnedSession(
 ) error {
 	result, err := r.pool.Exec(ctx, `
 		UPDATE user_sessions
-		SET revoked_at = $3
+		SET revoked_at = COALESCE(revoked_at, $3)
 		WHERE id = $1
 		  AND user_id = $2
-		  AND revoked_at IS NULL
 	`, sessionID, userID, now)
 	if err != nil {
 		return fmt.Errorf("revoke owned session: %w", err)
