@@ -7,6 +7,7 @@ import (
 	"github.com/ZheglY/family-tree-identity-service/internal/config"
 	"github.com/ZheglY/family-tree-identity-service/internal/platform/grpcserver"
 	"github.com/ZheglY/family-tree-identity-service/internal/platform/logger"
+	"github.com/ZheglY/family-tree-identity-service/internal/platform/postgres"
 )
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -22,7 +23,33 @@ func Run(ctx context.Context, cfg config.Config) error {
 		_ = log.Sync()
 	}()
 
-	server := grpcserver.New(log, cfg.GRPC.Reflection)
+	database, err := postgres.Open(
+		ctx,
+		postgres.Config{
+			URL:               cfg.Postgres.URL,
+			MaxConnections:    cfg.Postgres.MaxConnections,
+			MinConnections:    cfg.Postgres.MinConnections,
+			MaxConnLifetime:   cfg.Postgres.MaxConnLifetime,
+			MaxConnIdleTime:   cfg.Postgres.MaxConnIdleTime,
+			HealthCheckPeriod: cfg.Postgres.HealthCheckPeriod,
+			ConnectTimeout:    cfg.Postgres.ConnectTimeout,
+		},
+		log,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize PostgreSQL: %w", err)
+	}
+	defer database.Close()
+
+	server := grpcserver.New(
+		log,
+		cfg.GRPC.Reflection,
+		grpcserver.WithReadinessCheck("postgres", database.Ping),
+		grpcserver.WithReadinessTiming(
+			cfg.GRPC.ReadinessCheckInterval,
+			cfg.GRPC.ReadinessCheckTimeout,
+		),
+	)
 	if err := server.Run(
 		ctx,
 		cfg.GRPC.Address,
