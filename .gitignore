@@ -1,0 +1,24 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Compiled binaries
+*.exe
+*.test
+/bin/
+
+# Test results
+coverage.out
+
+# Logs
+*.log
+/logs/
+
+# IDE
+.idea/
+.vscode/
+
+# Operating system
+.DS_Store
+Thumbs.db
