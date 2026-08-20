@@ -22,6 +22,15 @@ type repositoryStub struct {
 	rotateErr      error
 	revokedHash    string
 	sessions       []domain.UserSession
+	passwordHash   string
+	changedUserID  uuid.UUID
+	changedOldHash string
+	changedNewHash string
+	resetUser      domain.User
+	resetUserErr   error
+	passwordReset  PasswordResetRecord
+	resetTokenHash string
+	resetNewHash   string
 }
 
 func (r *repositoryStub) CreateRegistration(
@@ -102,6 +111,52 @@ func (r *repositoryStub) RevokeOwnedSession(
 	return r.err
 }
 
+func (r *repositoryStub) GetPasswordCredential(
+	context.Context,
+	uuid.UUID,
+) (string, error) {
+	return r.passwordHash, r.err
+}
+
+func (r *repositoryStub) ChangePassword(
+	_ context.Context,
+	userID uuid.UUID,
+	currentHash string,
+	newHash string,
+	_ time.Time,
+) error {
+	r.changedUserID = userID
+	r.changedOldHash = currentHash
+	r.changedNewHash = newHash
+	return r.err
+}
+
+func (r *repositoryStub) FindPasswordResetUser(
+	context.Context,
+	string,
+) (domain.User, error) {
+	return r.resetUser, r.resetUserErr
+}
+
+func (r *repositoryStub) CreatePasswordReset(
+	_ context.Context,
+	record PasswordResetRecord,
+) error {
+	r.passwordReset = record
+	return r.err
+}
+
+func (r *repositoryStub) ResetPassword(
+	_ context.Context,
+	tokenHash string,
+	newHash string,
+	_ time.Time,
+) error {
+	r.resetTokenHash = tokenHash
+	r.resetNewHash = newHash
+	return r.err
+}
+
 type passwordHasherStub struct {
 	hash  string
 	match bool
@@ -145,9 +200,21 @@ func (s accessSignerStub) Sign(
 }
 
 type mailerStub struct {
-	email domain.Email
-	token string
-	err   error
+	email      domain.Email
+	token      string
+	resetEmail domain.Email
+	resetToken string
+	err        error
+}
+
+func (m *mailerStub) SendPasswordReset(
+	_ context.Context,
+	email domain.Email,
+	token string,
+) error {
+	m.resetEmail = email
+	m.resetToken = token
+	return m.err
 }
 
 func (m *mailerStub) SendVerification(
@@ -327,6 +394,136 @@ func TestRefreshSessionReturnsRotatedToken(t *testing.T) {
 	}
 	if repository.revokedHash != "token-hash" {
 		t.Fatalf("current hash = %q, want token-hash", repository.revokedHash)
+	}
+}
+
+func TestChangePasswordVerifiesCurrentPasswordAndRevokesSessions(t *testing.T) {
+	now := time.Date(2026, time.August, 20, 12, 0, 0, 0, time.UTC)
+	userID := uuid.New()
+	repository := &repositoryStub{passwordHash: "current-hash"}
+	service := NewService(
+		repository,
+		passwordHasherStub{hash: "new-hash", match: true},
+		tokenGeneratorStub{},
+		accessSignerStub{},
+		&mailerStub{},
+		30*24*time.Hour,
+	)
+	service.now = func() time.Time { return now }
+
+	err := service.ChangePassword(context.Background(), ChangePasswordCommand{
+		UserID:          userID,
+		CurrentPassword: "current password value",
+		NewPassword:     "new correct horse battery staple",
+	})
+	if err != nil {
+		t.Fatalf("ChangePassword() error = %v", err)
+	}
+	if repository.changedUserID != userID ||
+		repository.changedOldHash != "current-hash" ||
+		repository.changedNewHash != "new-hash" {
+		t.Fatalf("password change = user %s old %q new %q", repository.changedUserID, repository.changedOldHash, repository.changedNewHash)
+	}
+}
+
+func TestChangePasswordRejectsWrongCurrentPassword(t *testing.T) {
+	repository := &repositoryStub{passwordHash: "current-hash"}
+	service := NewService(
+		repository,
+		passwordHasherStub{hash: "new-hash", match: false},
+		tokenGeneratorStub{},
+		accessSignerStub{},
+		&mailerStub{},
+		30*24*time.Hour,
+	)
+
+	err := service.ChangePassword(context.Background(), ChangePasswordCommand{
+		UserID:          uuid.New(),
+		CurrentPassword: "wrong password value",
+		NewPassword:     "new correct horse battery staple",
+	})
+	if !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("ChangePassword() error = %v, want invalid credentials", err)
+	}
+	if repository.changedUserID != uuid.Nil {
+		t.Fatal("repository changed password after current password mismatch")
+	}
+}
+
+func TestForgotPasswordCreatesExpiringHashedToken(t *testing.T) {
+	now := time.Date(2026, time.August, 20, 12, 0, 0, 0, time.UTC)
+	user := activeUser(t, now)
+	repository := &repositoryStub{resetUser: user}
+	mailer := &mailerStub{}
+	service := NewService(
+		repository,
+		passwordHasherStub{},
+		tokenGeneratorStub{},
+		accessSignerStub{},
+		mailer,
+		30*24*time.Hour,
+	)
+	service.now = func() time.Time { return now }
+	tokenID := uuid.New()
+	service.newID = func() uuid.UUID { return tokenID }
+
+	if err := service.ForgotPassword(context.Background(), "FAMILY@example.com"); err != nil {
+		t.Fatalf("ForgotPassword() error = %v", err)
+	}
+	if repository.passwordReset.TokenID != tokenID ||
+		repository.passwordReset.UserID != user.ID ||
+		repository.passwordReset.TokenHash != "token-hash" {
+		t.Fatalf("password reset record = %#v", repository.passwordReset)
+	}
+	if got, want := repository.passwordReset.ExpiresAt, now.Add(time.Hour); !got.Equal(want) {
+		t.Fatalf("reset expiry = %s, want %s", got, want)
+	}
+	if mailer.resetToken != "raw-token" || mailer.resetEmail != user.Email {
+		t.Fatalf("reset mail = email %q token %q", mailer.resetEmail, mailer.resetToken)
+	}
+}
+
+func TestForgotPasswordDoesNotRevealUnknownAccount(t *testing.T) {
+	repository := &repositoryStub{resetUserErr: domain.ErrUserNotFound}
+	mailer := &mailerStub{}
+	service := NewService(
+		repository,
+		passwordHasherStub{},
+		tokenGeneratorStub{},
+		accessSignerStub{},
+		mailer,
+		30*24*time.Hour,
+	)
+
+	if err := service.ForgotPassword(context.Background(), "missing@example.com"); err != nil {
+		t.Fatalf("ForgotPassword() error = %v, want generic success", err)
+	}
+	if mailer.resetToken != "" || repository.passwordReset.TokenID != uuid.Nil {
+		t.Fatal("password reset material was created for an unknown account")
+	}
+}
+
+func TestResetPasswordHashesPasswordAndConsumesToken(t *testing.T) {
+	now := time.Date(2026, time.August, 20, 12, 0, 0, 0, time.UTC)
+	repository := &repositoryStub{}
+	service := NewService(
+		repository,
+		passwordHasherStub{hash: "new-hash"},
+		tokenGeneratorStub{},
+		accessSignerStub{},
+		&mailerStub{},
+		30*24*time.Hour,
+	)
+	service.now = func() time.Time { return now }
+
+	if err := service.ResetPassword(context.Background(), ResetPasswordCommand{
+		Token:       "raw-token",
+		NewPassword: "new correct horse battery staple",
+	}); err != nil {
+		t.Fatalf("ResetPassword() error = %v", err)
+	}
+	if repository.resetTokenHash != "token-hash" || repository.resetNewHash != "new-hash" {
+		t.Fatalf("reset values = token %q hash %q", repository.resetTokenHash, repository.resetNewHash)
 	}
 }
 

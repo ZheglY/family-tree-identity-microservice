@@ -15,11 +15,12 @@ import (
 )
 
 const (
-	verificationTokenTTL = 24 * time.Hour
-	maxDisplayNameLength = 100
-	maxRawTokenLength    = 256
-	maxPasswordBytes     = 1024
-	maxUserAgentBytes    = 512
+	verificationTokenTTL  = 24 * time.Hour
+	passwordResetTokenTTL = time.Hour
+	maxDisplayNameLength  = 100
+	maxRawTokenLength     = 256
+	maxPasswordBytes      = 1024
+	maxUserAgentBytes     = 512
 )
 
 type Service struct {
@@ -27,7 +28,7 @@ type Service struct {
 	passwordHasher PasswordHasher
 	tokenGenerator TokenGenerator
 	accessSigner   AccessTokenSigner
-	mailer         VerificationMailer
+	mailer         IdentityMailer
 	refreshTTL     time.Duration
 	newID          IDGenerator
 	now            Clock
@@ -38,7 +39,7 @@ func NewService(
 	passwordHasher PasswordHasher,
 	tokenGenerator TokenGenerator,
 	accessSigner AccessTokenSigner,
-	mailer VerificationMailer,
+	mailer IdentityMailer,
 	refreshTTL time.Duration,
 ) *Service {
 	return &Service{
@@ -83,6 +84,17 @@ type RegisterCommand struct {
 	Email       string
 	Password    string
 	DisplayName string
+}
+
+type ChangePasswordCommand struct {
+	UserID          uuid.UUID
+	CurrentPassword string
+	NewPassword     string
+}
+
+type ResetPasswordCommand struct {
+	Token       string
+	NewPassword string
 }
 
 func (s *Service) Register(
@@ -330,6 +342,108 @@ func (s *Service) RevokeSession(
 		return domain.ErrSessionNotFound
 	}
 	return s.repository.RevokeOwnedSession(ctx, userID, sessionID, s.now())
+}
+
+func (s *Service) ChangePassword(
+	ctx context.Context,
+	command ChangePasswordCommand,
+) error {
+	if command.UserID == uuid.Nil || len(command.CurrentPassword) > maxPasswordBytes {
+		return domain.ErrInvalidCredentials
+	}
+
+	currentHash, err := s.repository.GetPasswordCredential(ctx, command.UserID)
+	if err != nil {
+		return err
+	}
+	passwordMatches, err := s.passwordHasher.Verify(command.CurrentPassword, currentHash)
+	if err != nil {
+		return fmt.Errorf("verify current password: %w", err)
+	}
+	if !passwordMatches {
+		return domain.ErrInvalidCredentials
+	}
+
+	newHash, err := s.hashPassword(command.NewPassword)
+	if err != nil {
+		return err
+	}
+
+	return s.repository.ChangePassword(
+		ctx,
+		command.UserID,
+		currentHash,
+		newHash,
+		s.now(),
+	)
+}
+
+func (s *Service) ForgotPassword(ctx context.Context, emailValue string) error {
+	email, err := domain.NewEmail(emailValue)
+	if err != nil {
+		return nil
+	}
+
+	user, err := s.repository.FindPasswordResetUser(ctx, email.Normalized())
+	if errors.Is(err, domain.ErrUserNotFound) ||
+		errors.Is(err, domain.ErrAccountUnavailable) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	rawToken, tokenHash, err := s.tokenGenerator.Generate()
+	if err != nil {
+		return fmt.Errorf("generate password reset token: %w", err)
+	}
+	now := s.now()
+	if err := s.repository.CreatePasswordReset(ctx, PasswordResetRecord{
+		TokenID:   s.newID(),
+		UserID:    user.ID,
+		TokenHash: tokenHash,
+		ExpiresAt: now.Add(passwordResetTokenTTL),
+		CreatedAt: now,
+	}); err != nil {
+		return err
+	}
+
+	if err := s.mailer.SendPasswordReset(ctx, user.Email, rawToken); err != nil {
+		return fmt.Errorf("send password reset email: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) ResetPassword(
+	ctx context.Context,
+	command ResetPasswordCommand,
+) error {
+	if command.Token == "" || len(command.Token) > maxRawTokenLength {
+		return domain.ErrPasswordResetTokenInvalid
+	}
+
+	newHash, err := s.hashPassword(command.NewPassword)
+	if err != nil {
+		return err
+	}
+
+	return s.repository.ResetPassword(
+		ctx,
+		s.tokenGenerator.Hash(command.Token),
+		newHash,
+		s.now(),
+	)
+}
+
+func (s *Service) hashPassword(candidate string) (string, error) {
+	passwordHash, err := s.passwordHasher.Hash(candidate)
+	if err != nil {
+		if errors.Is(err, passwordsecurity.ErrPolicy) {
+			return "", fmt.Errorf("%w: %v", domain.ErrWeakPassword, err)
+		}
+		return "", fmt.Errorf("hash password: %w", err)
+	}
+	return passwordHash, nil
 }
 
 func (s *Service) rejectInvalidCredentials(candidate string) error {

@@ -37,6 +37,14 @@ type SessionIdentity struct {
 	ExpiresAt time.Time
 }
 
+type PasswordResetRecord struct {
+	TokenID   uuid.UUID
+	UserID    uuid.UUID
+	TokenHash string
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
 type Repository interface {
 	CreateRegistration(context.Context, RegistrationRecord) error
 	VerifyEmail(context.Context, string, time.Time) (domain.User, error)
@@ -55,6 +63,11 @@ type Repository interface {
 	GetUser(context.Context, uuid.UUID) (domain.User, error)
 	ListSessions(context.Context, uuid.UUID, time.Time) ([]domain.UserSession, error)
 	RevokeOwnedSession(context.Context, uuid.UUID, uuid.UUID, time.Time) error
+	GetPasswordCredential(context.Context, uuid.UUID) (string, error)
+	ChangePassword(context.Context, uuid.UUID, string, string, time.Time) error
+	FindPasswordResetUser(context.Context, string) (domain.User, error)
+	CreatePasswordReset(context.Context, PasswordResetRecord) error
+	ResetPassword(context.Context, string, string, time.Time) error
 }
 
 type PasswordHasher interface {
@@ -68,8 +81,9 @@ type TokenGenerator interface {
 	Hash(raw string) string
 }
 
-type VerificationMailer interface {
+type IdentityMailer interface {
 	SendVerification(context.Context, domain.Email, string) error
+	SendPasswordReset(context.Context, domain.Email, string) error
 }
 
 type AccessTokenSigner interface {

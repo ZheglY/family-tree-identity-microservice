@@ -12,6 +12,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("IDENTITY_LOG_LEVEL", "")
 	t.Setenv("IDENTITY_GRPC_REFLECTION", "")
 	t.Setenv("IDENTITY_EMAIL_VERIFICATION_URL", "")
+	t.Setenv("IDENTITY_EMAIL_PASSWORD_RESET_URL", "")
 	setPostgresEnvironment(t, "")
 
 	cfg, err := Load()
@@ -42,6 +43,9 @@ func TestLoadUsesDefaults(t *testing.T) {
 	}
 	if got, want := cfg.Email.VerificationURL, defaultEmailVerificationURL; got != want {
 		t.Fatalf("verification URL = %q, want %q", got, want)
+	}
+	if got, want := cfg.Email.PasswordResetURL, defaultPasswordResetURL; got != want {
+		t.Fatalf("password reset URL = %q, want %q", got, want)
 	}
 	if got, want := cfg.Tokens.AccessTTL, defaultAccessTokenTTL; got != want {
 		t.Fatalf("access token TTL = %s, want %s", got, want)
@@ -150,6 +154,8 @@ func setPostgresEnvironment(t *testing.T, value string) {
 		"IDENTITY_ACCESS_TOKEN_AUDIENCE",
 		"IDENTITY_ACCESS_TOKEN_TTL",
 		"IDENTITY_REFRESH_TOKEN_TTL",
+		"IDENTITY_EMAIL_VERIFICATION_URL",
+		"IDENTITY_EMAIL_PASSWORD_RESET_URL",
 	}
 
 	for _, key := range keys {

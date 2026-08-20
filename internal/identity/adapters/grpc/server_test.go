@@ -75,6 +75,24 @@ func (a applicationStub) RevokeSession(context.Context, uuid.UUID, uuid.UUID) er
 	return a.err
 }
 
+func (a applicationStub) ChangePassword(
+	context.Context,
+	application.ChangePasswordCommand,
+) error {
+	return a.err
+}
+
+func (a applicationStub) ForgotPassword(context.Context, string) error {
+	return a.err
+}
+
+func (a applicationStub) ResetPassword(
+	context.Context,
+	application.ResetPasswordCommand,
+) error {
+	return a.err
+}
+
 func TestRegisterMapsApplicationResponse(t *testing.T) {
 	user := testUser(t, domain.UserStatusPending)
 	server := NewServer(applicationStub{user: user}, zap.NewNop(), testPublicKey())
@@ -223,6 +241,54 @@ func TestListSessionsMapsApplicationSessions(t *testing.T) {
 	}
 	if len(response.GetSessions()) != 1 || response.GetSessions()[0].GetId() != sessionID.String() {
 		t.Fatalf("sessions response = %#v", response.GetSessions())
+	}
+}
+
+func TestChangePasswordMapsWrongCurrentPassword(t *testing.T) {
+	server := NewServer(
+		applicationStub{err: domain.ErrInvalidCredentials},
+		zap.NewNop(),
+		testPublicKey(),
+	)
+
+	_, err := server.ChangePassword(context.Background(), &identityv1.ChangePasswordRequest{
+		UserId:          uuid.NewString(),
+		CurrentPassword: "wrong password",
+		NewPassword:     "new correct horse battery staple",
+	})
+	if got, want := status.Code(err), codes.Unauthenticated; got != want {
+		t.Fatalf("gRPC code = %s, want %s", got, want)
+	}
+}
+
+func TestResetPasswordMapsConsumedToken(t *testing.T) {
+	server := NewServer(
+		applicationStub{err: domain.ErrPasswordResetTokenUsed},
+		zap.NewNop(),
+		testPublicKey(),
+	)
+
+	_, err := server.ResetPassword(context.Background(), &identityv1.ResetPasswordRequest{
+		Token:       "used-token",
+		NewPassword: "new correct horse battery staple",
+	})
+	if got, want := status.Code(err), codes.FailedPrecondition; got != want {
+		t.Fatalf("gRPC code = %s, want %s", got, want)
+	}
+}
+
+func TestForgotPasswordHidesApplicationFailure(t *testing.T) {
+	server := NewServer(
+		applicationStub{err: errors.New("mailer is unavailable")},
+		zap.NewNop(),
+		testPublicKey(),
+	)
+
+	if _, err := server.ForgotPassword(
+		context.Background(),
+		&identityv1.ForgotPasswordRequest{Email: "family@example.com"},
+	); err != nil {
+		t.Fatalf("ForgotPassword() error = %v, want generic success", err)
 	}
 }
 

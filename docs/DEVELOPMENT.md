@@ -59,7 +59,7 @@ go run ./cmd/identity-service
 
 The standard gRPC health service reports `NOT_SERVING` if its PostgreSQL readiness check fails.
 
-In development and test environments the verification-email adapter writes a one-time verification URL to the structured log. The raw token is never stored in PostgreSQL. Production startup is intentionally rejected until a real transactional email or outbox adapter is configured.
+In development and test environments the mail adapter writes one-time email-verification and password-reset URLs to the structured log. PostgreSQL stores only token hashes; verification tokens expire after 24 hours and reset tokens after one hour. A newer reset request invalidates the previous token. Production startup is intentionally rejected until a real transactional email or outbox adapter is configured.
 
 ## Access and refresh tokens
 
@@ -74,6 +74,8 @@ Copy `IDENTITY_ACCESS_TOKEN_PRIVATE_KEY_BASE64` into the local `.env`. The comma
 If the private key is omitted in development, the service creates an ephemeral key and logs a warning. Every outstanding access token becomes invalid after a restart. Production configuration requires a persistent private key.
 
 Refresh tokens are opaque random values. PostgreSQL stores only their SHA-256 hashes. Every successful refresh replaces the current token and records the previous hash in `used_refresh_tokens`. Reusing a replaced token revokes the entire affected session. Session expiry is absolute and defaults to 30 days; access token expiry defaults to 15 minutes.
+
+Changing a password requires the current password. Both an authenticated password change and a successful password recovery revoke every existing session, so the user must sign in again.
 
 The gRPC server is an internal service boundary. Production deployment must restrict it to the private service network and add authenticated transport before exposing it outside that boundary.
 

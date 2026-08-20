@@ -32,7 +32,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	}()
 
 	if cfg.App.Environment == "production" {
-		return fmt.Errorf("production verification mailer is not configured")
+		return fmt.Errorf("production identity mailer is not configured")
 	}
 
 	database, err := postgres.Open(
@@ -53,12 +53,13 @@ func Run(ctx context.Context, cfg config.Config) error {
 	}
 	defer database.Close()
 
-	verificationMailer, err := mailer.NewLogMailer(
+	identityMailer, err := mailer.NewLogMailer(
 		log,
 		cfg.Email.VerificationURL,
+		cfg.Email.PasswordResetURL,
 	)
 	if err != nil {
-		return fmt.Errorf("initialize verification mailer: %w", err)
+		return fmt.Errorf("initialize identity mailer: %w", err)
 	}
 
 	var accessSigner *accesstoken.Signer
@@ -91,7 +92,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		passwordsecurity.NewHasher(),
 		tokensecurity.NewGenerator(),
 		accessSigner,
-		verificationMailer,
+		identityMailer,
 		cfg.Tokens.RefreshTTL,
 	)
 	identityGRPCServer := identitygrpc.NewServer(

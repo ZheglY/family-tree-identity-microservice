@@ -28,7 +28,17 @@ import (
 )
 
 type captureMailer struct {
-	token string
+	token      string
+	resetToken string
+}
+
+func (m *captureMailer) SendPasswordReset(
+	_ context.Context,
+	_ domain.Email,
+	token string,
+) error {
+	m.resetToken = token
+	return nil
 }
 
 func (m *captureMailer) SendVerification(
@@ -105,7 +115,7 @@ func TestRegistrationVerticalSliceIntegration(t *testing.T) {
 	t.Cleanup(func() { _ = clientConnection.Close() })
 	client := identityv1.NewIdentityServiceClient(clientConnection)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	registerResponse, err := client.Register(ctx, &identityv1.RegisterRequest{
@@ -311,5 +321,79 @@ func TestRegistrationVerticalSliceIntegration(t *testing.T) {
 		if got, want := status.Code(err), codes.Unauthenticated; got != want {
 			t.Fatalf("refresh after logout all code = %s, want %s", got, want)
 		}
+	}
+
+	passwordChangeSession, err := client.Login(ctx, &identityv1.LoginRequest{
+		Email:    "family@example.com",
+		Password: "correct horse battery staple",
+	})
+	if err != nil {
+		t.Fatalf("Login() before password change error = %v", err)
+	}
+	if _, err := client.ChangePassword(ctx, &identityv1.ChangePasswordRequest{
+		UserId:          registerResponse.GetUser().GetId(),
+		CurrentPassword: "correct horse battery staple",
+		NewPassword:     "new correct horse battery staple",
+	}); err != nil {
+		t.Fatalf("ChangePassword() error = %v", err)
+	}
+	_, err = client.RefreshSession(ctx, &identityv1.RefreshSessionRequest{
+		RefreshToken: passwordChangeSession.GetRefreshToken(),
+	})
+	if got, want := status.Code(err), codes.Unauthenticated; got != want {
+		t.Fatalf("refresh after password change code = %s, want %s", got, want)
+	}
+	_, err = client.Login(ctx, &identityv1.LoginRequest{
+		Email:    "family@example.com",
+		Password: "correct horse battery staple",
+	})
+	if got, want := status.Code(err), codes.Unauthenticated; got != want {
+		t.Fatalf("old password login code = %s, want %s", got, want)
+	}
+
+	resetSession, err := client.Login(ctx, &identityv1.LoginRequest{
+		Email:    "family@example.com",
+		Password: "new correct horse battery staple",
+	})
+	if err != nil {
+		t.Fatalf("Login() before password recovery error = %v", err)
+	}
+	if _, err := client.ForgotPassword(ctx, &identityv1.ForgotPasswordRequest{
+		Email: "missing@example.com",
+	}); err != nil {
+		t.Fatalf("ForgotPassword() unknown account error = %v", err)
+	}
+	if _, err := client.ForgotPassword(ctx, &identityv1.ForgotPasswordRequest{
+		Email: "FAMILY@example.com",
+	}); err != nil {
+		t.Fatalf("ForgotPassword() error = %v", err)
+	}
+	if mailer.resetToken == "" {
+		t.Fatal("password reset token was not delivered")
+	}
+	if _, err := client.ResetPassword(ctx, &identityv1.ResetPasswordRequest{
+		Token:       mailer.resetToken,
+		NewPassword: "recovered correct horse battery staple",
+	}); err != nil {
+		t.Fatalf("ResetPassword() error = %v", err)
+	}
+	_, err = client.RefreshSession(ctx, &identityv1.RefreshSessionRequest{
+		RefreshToken: resetSession.GetRefreshToken(),
+	})
+	if got, want := status.Code(err), codes.Unauthenticated; got != want {
+		t.Fatalf("refresh after password reset code = %s, want %s", got, want)
+	}
+	_, err = client.ResetPassword(ctx, &identityv1.ResetPasswordRequest{
+		Token:       mailer.resetToken,
+		NewPassword: "another correct horse battery staple",
+	})
+	if got, want := status.Code(err), codes.FailedPrecondition; got != want {
+		t.Fatalf("reused reset token code = %s, want %s", got, want)
+	}
+	if _, err := client.Login(ctx, &identityv1.LoginRequest{
+		Email:    "family@example.com",
+		Password: "recovered correct horse battery staple",
+	}); err != nil {
+		t.Fatalf("Login() after password recovery error = %v", err)
 	}
 }

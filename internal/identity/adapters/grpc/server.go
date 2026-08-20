@@ -24,6 +24,9 @@ type IdentityApplication interface {
 	GetUser(context.Context, uuid.UUID) (domain.User, error)
 	ListSessions(context.Context, uuid.UUID) ([]domain.UserSession, error)
 	RevokeSession(context.Context, uuid.UUID, uuid.UUID) error
+	ChangePassword(context.Context, application.ChangePasswordCommand) error
+	ForgotPassword(context.Context, string) error
+	ResetPassword(context.Context, application.ResetPasswordCommand) error
 }
 
 type Server struct {
@@ -210,6 +213,59 @@ func (s *Server) RevokeSession(
 	return &identityv1.RevokeSessionResponse{}, nil
 }
 
+func (s *Server) ChangePassword(
+	ctx context.Context,
+	request *identityv1.ChangePasswordRequest,
+) (*identityv1.ChangePasswordResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	userID, err := uuid.Parse(request.GetUserId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "user ID is invalid")
+	}
+
+	if err := s.application.ChangePassword(ctx, application.ChangePasswordCommand{
+		UserID:          userID,
+		CurrentPassword: request.GetCurrentPassword(),
+		NewPassword:     request.GetNewPassword(),
+	}); err != nil {
+		return nil, s.mapError("change password", err)
+	}
+	return &identityv1.ChangePasswordResponse{}, nil
+}
+
+func (s *Server) ForgotPassword(
+	ctx context.Context,
+	request *identityv1.ForgotPasswordRequest,
+) (*identityv1.ForgotPasswordResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if err := s.application.ForgotPassword(ctx, request.GetEmail()); err != nil {
+		// The public response must not reveal whether the account exists or whether
+		// delivery failed. Operators still receive the original error in logs.
+		s.log.Error("forgot password", zap.Error(err))
+	}
+	return &identityv1.ForgotPasswordResponse{}, nil
+}
+
+func (s *Server) ResetPassword(
+	ctx context.Context,
+	request *identityv1.ResetPasswordRequest,
+) (*identityv1.ResetPasswordResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if err := s.application.ResetPassword(ctx, application.ResetPasswordCommand{
+		Token:       request.GetToken(),
+		NewPassword: request.GetNewPassword(),
+	}); err != nil {
+		return nil, s.mapError("reset password", err)
+	}
+	return &identityv1.ResetPasswordResponse{}, nil
+}
+
 func (s *Server) Register(
 	ctx context.Context,
 	request *identityv1.RegisterRequest,
@@ -264,6 +320,11 @@ func (s *Server) mapError(operation string, err error) error {
 	case errors.Is(err, domain.ErrVerificationTokenExpired),
 		errors.Is(err, domain.ErrVerificationTokenUsed):
 		return status.Error(codes.FailedPrecondition, "verification token cannot be used")
+	case errors.Is(err, domain.ErrPasswordResetTokenInvalid):
+		return status.Error(codes.InvalidArgument, "password reset token is invalid")
+	case errors.Is(err, domain.ErrPasswordResetTokenExpired),
+		errors.Is(err, domain.ErrPasswordResetTokenUsed):
+		return status.Error(codes.FailedPrecondition, "password reset token cannot be used")
 	case errors.Is(err, domain.ErrInvalidSessionMetadata):
 		return status.Error(codes.InvalidArgument, "session metadata is invalid")
 	case errors.Is(err, domain.ErrInvalidCredentials):

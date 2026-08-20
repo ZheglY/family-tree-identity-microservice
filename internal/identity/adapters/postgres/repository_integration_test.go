@@ -291,6 +291,180 @@ func TestRepositoryGetsUserAndManagesOwnedSessionsIntegration(t *testing.T) {
 	}
 }
 
+func TestRepositoryChangesPasswordAndRevokesSessionsIntegration(t *testing.T) {
+	pool := openTestPool(t)
+	repository := NewRepository(pool)
+	truncateIdentityTables(t, pool)
+
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 20, 12, 0, 0, 0, time.UTC)
+	record := registrationRecord(t, "change-password@example.com", "change-verification", now)
+	if err := repository.CreateRegistration(ctx, record); err != nil {
+		t.Fatalf("CreateRegistration() error = %v", err)
+	}
+	user, err := repository.VerifyEmail(ctx, "change-verification", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("VerifyEmail() error = %v", err)
+	}
+	if err := repository.CreateSession(ctx, application.SessionRecord{
+		ID:               uuid.New(),
+		UserID:           user.ID,
+		RefreshTokenHash: "change-refresh",
+		ExpiresAt:        now.Add(24 * time.Hour),
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	currentHash, err := repository.GetPasswordCredential(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetPasswordCredential() error = %v", err)
+	}
+	if err := repository.ChangePassword(
+		ctx,
+		user.ID,
+		currentHash,
+		"$argon2id$new-password-hash",
+		now.Add(time.Hour),
+	); err != nil {
+		t.Fatalf("ChangePassword() error = %v", err)
+	}
+	changedHash, err := repository.GetPasswordCredential(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetPasswordCredential() after change error = %v", err)
+	}
+	if changedHash != "$argon2id$new-password-hash" {
+		t.Fatalf("changed password hash = %q", changedHash)
+	}
+	if _, err := repository.RotateRefreshToken(
+		ctx,
+		"change-refresh",
+		"change-refresh-new",
+		"",
+		"",
+		now.Add(2*time.Hour),
+	); !errors.Is(err, domain.ErrSessionRevoked) {
+		t.Fatalf("refresh after password change error = %v, want session revoked", err)
+	}
+	if err := repository.ChangePassword(
+		ctx,
+		user.ID,
+		currentHash,
+		"$argon2id$stale-write",
+		now.Add(3*time.Hour),
+	); !errors.Is(err, domain.ErrInvalidCredentials) {
+		t.Fatalf("stale password change error = %v, want invalid credentials", err)
+	}
+}
+
+func TestRepositoryResetsPasswordWithSingleUseTokenIntegration(t *testing.T) {
+	pool := openTestPool(t)
+	repository := NewRepository(pool)
+	truncateIdentityTables(t, pool)
+
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 20, 12, 0, 0, 0, time.UTC)
+	record := registrationRecord(t, "reset-password@example.com", "reset-verification", now)
+	if err := repository.CreateRegistration(ctx, record); err != nil {
+		t.Fatalf("CreateRegistration() error = %v", err)
+	}
+	user, err := repository.VerifyEmail(ctx, "reset-verification", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("VerifyEmail() error = %v", err)
+	}
+	resetUser, err := repository.FindPasswordResetUser(ctx, user.Email.Normalized())
+	if err != nil || resetUser.ID != user.ID {
+		t.Fatalf("FindPasswordResetUser() = %#v, %v", resetUser, err)
+	}
+	if err := repository.CreateSession(ctx, application.SessionRecord{
+		ID:               uuid.New(),
+		UserID:           user.ID,
+		RefreshTokenHash: "reset-refresh",
+		ExpiresAt:        now.Add(24 * time.Hour),
+		CreatedAt:        now,
+	}); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	firstRecord := application.PasswordResetRecord{
+		TokenID:   uuid.New(),
+		UserID:    user.ID,
+		TokenHash: "reset-hash-1",
+		ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now.Add(2 * time.Minute),
+	}
+	if err := repository.CreatePasswordReset(ctx, firstRecord); err != nil {
+		t.Fatalf("CreatePasswordReset(first) error = %v", err)
+	}
+	secondRecord := application.PasswordResetRecord{
+		TokenID:   uuid.New(),
+		UserID:    user.ID,
+		TokenHash: "reset-hash-2",
+		ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now.Add(3 * time.Minute),
+	}
+	if err := repository.CreatePasswordReset(ctx, secondRecord); err != nil {
+		t.Fatalf("CreatePasswordReset(second) error = %v", err)
+	}
+	if err := repository.ResetPassword(
+		ctx,
+		"reset-hash-1",
+		"$argon2id$unused-password-hash",
+		now.Add(4*time.Minute),
+	); !errors.Is(err, domain.ErrPasswordResetTokenUsed) {
+		t.Fatalf("superseded reset error = %v, want token used", err)
+	}
+	if err := repository.ResetPassword(
+		ctx,
+		"reset-hash-2",
+		"$argon2id$recovered-password-hash",
+		now.Add(5*time.Minute),
+	); err != nil {
+		t.Fatalf("ResetPassword() error = %v", err)
+	}
+	changedHash, err := repository.GetPasswordCredential(ctx, user.ID)
+	if err != nil || changedHash != "$argon2id$recovered-password-hash" {
+		t.Fatalf("password after reset = %q, %v", changedHash, err)
+	}
+	if _, err := repository.RotateRefreshToken(
+		ctx,
+		"reset-refresh",
+		"reset-refresh-new",
+		"",
+		"",
+		now.Add(6*time.Minute),
+	); !errors.Is(err, domain.ErrSessionRevoked) {
+		t.Fatalf("refresh after reset error = %v, want session revoked", err)
+	}
+	if err := repository.ResetPassword(
+		ctx,
+		"reset-hash-2",
+		"$argon2id$reused-password-hash",
+		now.Add(7*time.Minute),
+	); !errors.Is(err, domain.ErrPasswordResetTokenUsed) {
+		t.Fatalf("reused reset error = %v, want token used", err)
+	}
+
+	expiredRecord := application.PasswordResetRecord{
+		TokenID:   uuid.New(),
+		UserID:    user.ID,
+		TokenHash: "reset-hash-expired",
+		ExpiresAt: now.Add(10 * time.Minute),
+		CreatedAt: now.Add(8 * time.Minute),
+	}
+	if err := repository.CreatePasswordReset(ctx, expiredRecord); err != nil {
+		t.Fatalf("CreatePasswordReset(expired) error = %v", err)
+	}
+	if err := repository.ResetPassword(
+		ctx,
+		"reset-hash-expired",
+		"$argon2id$late-password-hash",
+		now.Add(11*time.Minute),
+	); !errors.Is(err, domain.ErrPasswordResetTokenExpired) {
+		t.Fatalf("expired reset error = %v, want token expired", err)
+	}
+}
+
 func registrationRecord(
 	t *testing.T,
 	emailValue string,

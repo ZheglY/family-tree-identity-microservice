@@ -25,6 +25,7 @@ const (
 	defaultReadinessCheckInterval  = 5 * time.Second
 	defaultReadinessCheckTimeout   = 2 * time.Second
 	defaultEmailVerificationURL    = "http://localhost:3000/verify-email"
+	defaultPasswordResetURL        = "http://localhost:3000/reset-password"
 	defaultAccessTokenKeyID        = "identity-development-1"
 	defaultAccessTokenIssuer       = "family-tree-identity"
 	defaultAccessTokenAudience     = "family-tree-api"
@@ -63,7 +64,8 @@ func NewConfig(
 		},
 		Postgres: postgresConfig,
 		Email: EmailConfig{
-			VerificationURL: defaultEmailVerificationURL,
+			VerificationURL:  defaultEmailVerificationURL,
+			PasswordResetURL: defaultPasswordResetURL,
 		},
 		Tokens: TokenConfig{
 			AccessKeyID:    defaultAccessTokenKeyID,
@@ -102,7 +104,8 @@ type PostgresConfig struct {
 }
 
 type EmailConfig struct {
-	VerificationURL string
+	VerificationURL  string
+	PasswordResetURL string
 }
 
 type TokenConfig struct {
@@ -186,6 +189,10 @@ func Load() (Config, error) {
 	config.Email.VerificationURL = stringFromEnv(
 		"IDENTITY_EMAIL_VERIFICATION_URL",
 		defaultEmailVerificationURL,
+	)
+	config.Email.PasswordResetURL = stringFromEnv(
+		"IDENTITY_EMAIL_PASSWORD_RESET_URL",
+		defaultPasswordResetURL,
 	)
 
 	tokenConfig, err := loadTokenConfig(environment)

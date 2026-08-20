@@ -568,6 +568,263 @@ func (r *Repository) RevokeOwnedSession(
 	return nil
 }
 
+func (r *Repository) GetPasswordCredential(
+	ctx context.Context,
+	userID uuid.UUID,
+) (string, error) {
+	var passwordHash string
+	err := r.pool.QueryRow(ctx, `
+		SELECT c.password_hash
+		FROM user_credentials c
+		JOIN users u ON u.id = c.user_id
+		WHERE c.user_id = $1
+		  AND u.status = 'active'
+		  AND u.deleted_at IS NULL
+	`, userID).Scan(&passwordHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.ErrAccountUnavailable
+	}
+	if err != nil {
+		return "", fmt.Errorf("select password credential: %w", err)
+	}
+	return passwordHash, nil
+}
+
+func (r *Repository) ChangePassword(
+	ctx context.Context,
+	userID uuid.UUID,
+	expectedCurrentHash string,
+	newHash string,
+	now time.Time,
+) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin password change transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	result, err := tx.Exec(ctx, `
+		UPDATE user_credentials c
+		SET password_hash = $3,
+			password_changed_at = $4,
+			updated_at = $4,
+			failed_login_count = 0,
+			locked_until = NULL
+		FROM users u
+		WHERE c.user_id = $1
+		  AND c.password_hash = $2
+		  AND u.id = c.user_id
+		  AND u.status = 'active'
+		  AND u.deleted_at IS NULL
+	`, userID, expectedCurrentHash, newHash, now)
+	if err != nil {
+		return fmt.Errorf("update password credential: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return domain.ErrInvalidCredentials
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE user_sessions
+		SET revoked_at = COALESCE(revoked_at, $2)
+		WHERE user_id = $1
+	`, userID, now); err != nil {
+		return fmt.Errorf("revoke sessions after password change: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit password change transaction: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) FindPasswordResetUser(
+	ctx context.Context,
+	normalizedEmail string,
+) (domain.User, error) {
+	var (
+		user      domain.User
+		emailText string
+	)
+	err := r.pool.QueryRow(ctx, `
+		SELECT
+			id, email, display_name, status, email_verified_at,
+			created_at, updated_at, deleted_at, version
+		FROM users
+		WHERE normalized_email = $1
+		  AND deleted_at IS NULL
+	`, normalizedEmail).Scan(
+		&user.ID,
+		&emailText,
+		&user.DisplayName,
+		&user.Status,
+		&user.EmailVerifiedAt,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+		&user.DeletedAt,
+		&user.Version,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.User{}, domain.ErrUserNotFound
+	}
+	if err != nil {
+		return domain.User{}, fmt.Errorf("select password reset user: %w", err)
+	}
+	if user.Status != domain.UserStatusActive {
+		return domain.User{}, domain.ErrAccountUnavailable
+	}
+
+	email, err := domain.NewEmail(emailText)
+	if err != nil {
+		return domain.User{}, fmt.Errorf("read stored email: %w", err)
+	}
+	user.Email = email
+	return user, nil
+}
+
+func (r *Repository) CreatePasswordReset(
+	ctx context.Context,
+	record application.PasswordResetRecord,
+) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin password reset request transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	var lockedUserID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT id
+		FROM users
+		WHERE id = $1
+		  AND status = 'active'
+		  AND deleted_at IS NULL
+		FOR UPDATE
+	`, record.UserID).Scan(&lockedUserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrAccountUnavailable
+	}
+	if err != nil {
+		return fmt.Errorf("lock password reset user: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE one_time_tokens
+		SET used_at = $2
+		WHERE user_id = $1
+		  AND purpose = 'reset_password'
+		  AND used_at IS NULL
+	`, record.UserID, record.CreatedAt); err != nil {
+		return fmt.Errorf("invalidate previous password reset tokens: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO one_time_tokens (
+			id, user_id, purpose, token_hash, expires_at, created_at
+		) VALUES ($1, $2, 'reset_password', $3, $4, $5)
+	`,
+		record.TokenID,
+		record.UserID,
+		record.TokenHash,
+		record.ExpiresAt,
+		record.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("insert password reset token: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit password reset request transaction: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ResetPassword(
+	ctx context.Context,
+	tokenHash string,
+	newHash string,
+	now time.Time,
+) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin password reset transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	var (
+		tokenID   uuid.UUID
+		userID    uuid.UUID
+		expiresAt time.Time
+		usedAt    *time.Time
+		status    domain.UserStatus
+		deletedAt *time.Time
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT
+			t.id, t.user_id, t.expires_at, t.used_at,
+			u.status, u.deleted_at
+		FROM one_time_tokens t
+		JOIN users u ON u.id = t.user_id
+		WHERE t.token_hash = $1
+		  AND t.purpose = 'reset_password'
+		FOR UPDATE OF t, u
+	`, tokenHash).Scan(
+		&tokenID,
+		&userID,
+		&expiresAt,
+		&usedAt,
+		&status,
+		&deletedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrPasswordResetTokenInvalid
+	}
+	if err != nil {
+		return fmt.Errorf("select password reset token: %w", err)
+	}
+	if usedAt != nil {
+		return domain.ErrPasswordResetTokenUsed
+	}
+	if !now.Before(expiresAt) {
+		return domain.ErrPasswordResetTokenExpired
+	}
+	if deletedAt != nil || status != domain.UserStatusActive {
+		return domain.ErrAccountUnavailable
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE user_credentials
+		SET password_hash = $2,
+			password_changed_at = $3,
+			updated_at = $3,
+			failed_login_count = 0,
+			locked_until = NULL
+		WHERE user_id = $1
+	`, userID, newHash, now); err != nil {
+		return fmt.Errorf("reset password credential: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE user_sessions
+		SET revoked_at = COALESCE(revoked_at, $2)
+		WHERE user_id = $1
+	`, userID, now); err != nil {
+		return fmt.Errorf("revoke sessions after password reset: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE one_time_tokens
+		SET used_at = $2
+		WHERE id = $1
+	`, tokenID, now); err != nil {
+		return fmt.Errorf("mark password reset token used: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit password reset transaction: %w", err)
+	}
+	return nil
+}
+
 func isConstraint(err error, constraint string) bool {
 	var postgresError *pgconn.PgError
 	return errors.As(err, &postgresError) &&
